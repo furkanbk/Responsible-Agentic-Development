@@ -52,7 +52,9 @@ store/knowledge_graph.json   (nodes · edges · decisions)
 - **`Result` carries:** `.text`, `.tool_calls`, `.output_items`, `.status`, `.stop_reason`,
   `.truncated`, `.usage`
 - **Contract notes:** `truncated=True` means the call hit the output-token cap — *returned
-  text is not a finished result*. Callers must branch on it.
+  text is not a finished result*. Callers must branch on it. `output_items` is **replay-safe**:
+  `reasoning` items are dropped and the server `id` is stripped so the list can be fed straight
+  back as next-turn input without a provider 400 (decision #13); `raw` keeps the untouched response.
 - **Cost accounting:** input tokens already include cached tokens (cheaper rate); output
   tokens already include reasoning tokens (normal output rate).
 - **Depends on:** `openai`, `python-dotenv`
@@ -188,7 +190,7 @@ component moved or was removed, so the decision may be stale and should be surfa
 | 10 | 2026-07-23 | loop | Stall = a repeated identical (name+args) call; a repeat of a *declined* call stops as `declined`, not `stalled` | Making a decline immediately terminal; letting the model spin forever | A decline first returns a `declined` result so the model can react and answer (Part B, B4, TODO T2.4). Only if the model re-issues the same blocked call does the loop stop — reported as `declined` (blocked action) vs `stalled` (general spin) so the trace says which. |
 | 11 | 2026-07-23 | agentlib | `CHEAP = gpt-5.4-nano`, `STRONG = gpt-5.5`; `MODELS` keyed by **literal model id**, not by the `CHEAP`/`STRONG` variables | Keying the price table by the `CHEAP`/`STRONG` symbols as originally stubbed | Both ids are env-overridable, so variable-keyed entries silently become the *wrong* prices under the *right* key the moment `.env` changes — and `estimate_cost(usage, model)` takes an arbitrary id anyway. Literal keys make an unpriced model miss the lookup and return `0.0` (visibly wrong) instead of returning a confidently wrong number. `gpt-5.5` is priced at its ≤272K context tier only; longer contexts bill higher and are not modelled. |
 | 12 | 2026-07-23 | agentlib | Gemini ids are excluded from selection despite appearing in Zen's `/models` list | Using `gemini-3-flash` as `CHEAP` (its listing implies support) | Zen 400s on every `gemini-*` id via both `/responses` and `/chat/completions`: `Invalid JSON request body: Missing key at ["contents"]`. `contents` is Google's native field, so Zen forwards our OpenAI-shaped body untranslated — a provider-side gap, not fixable here. Verified reproducible on `gemini-3-flash` and `gemini-3.5-flash-lite`, with `gpt-5-nano` succeeding on the identical code path. **A model appearing in `/models` is not evidence it works; smoke-test before pinning.** |
-| 13 | | | | | |
+| 13 | 2026-07-23 | core | `_to_result` sanitizes `output_items` for replay: **drop `reasoning` items** and **strip the server `id`** from each item before it is stored | Storing raw `model_dump()` items and replaying them verbatim | `output_items` is fed back as the next turn's input by the loop, so it may only hold items the Responses *input* schema accepts. Verified by controlled replay against `gpt-5.5`: replaying a `reasoning` item, or a `function_call` carrying its server-assigned `id`, both 400 with `Error from provider (Console): Upstream request failed`. Only dropping the reasoning item **and** stripping `id` (keeping `call_id`, the tool correlator) succeeds. The `gpt-5.4-nano` upstream tolerated both, so the bug surfaced **only on STRONG** with identical loop code — a reminder that provider strictness is model-specific (cf. decision #12). `Result.raw` still holds the untouched response. |
 
 ---
 

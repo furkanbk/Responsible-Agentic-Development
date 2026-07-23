@@ -160,6 +160,28 @@ def call(
     return _to_result(resp)
 
 
+# Output items must be REPLAY-SAFE: `output_items` is fed straight back as the
+# next turn's input (loop.py), so it may only contain items the Responses input
+# schema accepts. Two things a raw model_dump() carries that the gpt-5.5 upstream
+# (behind Zen) rejects with a 400 on replay — verified empirically:
+#   - `reasoning` items: not accepted as replayed input here (no encrypted content
+#     round-trips through the proxy), so we drop them. The nano upstream tolerates
+#     them, which is why the bug only showed on the STRONG model.
+#   - the server-assigned `id` on a `function_call` item: replaying an item with its
+#     original server id 400s. `call_id` (the tool-call correlator) is kept; only
+#     the decorative server `id` is stripped.
+# See ARCHITECTURE.md decision record. `Result.raw` still holds the untouched resp.
+_REPLAY_DROP_TYPES = {"reasoning"}
+_SERVER_ONLY_FIELDS = {"id"}
+
+
+def _replay_safe(item_dict: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a replay-safe copy of one output item, or None to drop it entirely."""
+    if item_dict.get("type") in _REPLAY_DROP_TYPES:
+        return None
+    return {k: v for k, v in item_dict.items() if k not in _SERVER_ONLY_FIELDS}
+
+
 def _to_result(resp: Any) -> Result:
     """Parse a Responses SDK object into a `Result` (defensive against shape drift)."""
     output_items: list[dict[str, Any]] = []
@@ -167,7 +189,9 @@ def _to_result(resp: Any) -> Result:
 
     for item in getattr(resp, "output", None) or []:
         item_dict = item.model_dump() if hasattr(item, "model_dump") else dict(item)
-        output_items.append(item_dict)
+        safe = _replay_safe(item_dict)
+        if safe is not None:
+            output_items.append(safe)
         if item_dict.get("type") == "function_call":
             args = item_dict.get("arguments")
             if isinstance(args, str):
