@@ -44,29 +44,32 @@ schema in `ARCHITECTURE.md` §4, the `Result` fields in `agentlib/core.py`.
 
 ## Phase 0 — Foundation (Berat, blocking; do first)
 
-- [ ] **T0.1** `agentlib/core.py` — Zen wrapper. OpenAI SDK, base URL `https://opencode.ai/zen/v1`,
+- [x] **T0.1** `agentlib/core.py` — Zen wrapper. OpenAI SDK, base URL `https://opencode.ai/zen/v1`,
       key from `.env` as `OPENCODE_API_KEY` (never hard-coded). `call(...)` accepting
       `prompt | messages`, `system`, `model`, `tools`, `max_output_tokens`.
-- [ ] **T0.2** `Result` dataclass: `.text`, `.tool_calls`, `.output_items`, `.status`,
+- [x] **T0.2** `Result` dataclass: `.text`, `.tool_calls`, `.output_items`, `.status`,
       `.stop_reason`, `.truncated`, `.usage`. `truncated` is a first-class flag —
       "returned text" ≠ "finished".
-- [ ] **T0.3** `CHEAP` / `STRONG` model ids + `MODELS`; `estimate_cost(usage)` (input tokens
+- [~] **T0.3** `CHEAP` / `STRONG` model ids + `MODELS`; `estimate_cost(usage)` (input tokens
       include cached at cached rate; output tokens include reasoning at output rate).
-      _Blocked on: exact Zen model ids + per-token prices from Slack._
-- [ ] **T0.4** `agentlib/schemas.py` — `schema_for(fn)` from signature + annotations + docstring.
-- [ ] **T0.5** `agentlib/guards.py` — `validate_args`, truncation check, stall detection,
+      Structure + `estimate_cost` **done**; model ids/prices are env-overridable placeholders.
+      _Still blocked on: exact Zen model ids + per-token prices from Slack._
+- [x] **T0.4** `agentlib/schemas.py` — `schema_for(fn)` from signature + annotations + docstring.
+- [x] **T0.5** `agentlib/guards.py` — `validate_args`, truncation check, stall detection,
       `GATED` set, approval-policy helper.
-- [ ] **T0.6** `agentlib/loop.py` — `run_agent(...)` with the gate hook, the error branch hook,
-      and a `trace`. Stopping conditions: `answered`, `max_steps`, `stalled`, `declined`.
-- [ ] **T0.7** `tools/__init__.py` — registry + schema assembly, importing every stub so the
+- [x] **T0.6** `agentlib/loop.py` — `run_agent(...)` with the gate hook, the error branch hook,
+      and a `trace`. Stopping conditions: `answered`, `max_steps`, `stalled`, `declined` (+ `truncated`).
+- [x] **T0.7** `tools/__init__.py` — registry + schema assembly, importing every stub so the
       system runs end-to-end against stubs from day one.
-- [ ] **T0.8** **Stub contracts** written into `tools/repo_scan.py`, `tools/graph_query.py`,
+- [x] **T0.8** **Stub contracts** written into `tools/repo_scan.py`, `tools/graph_query.py`,
       `tools/decisions.py`, `tools/graph_write.py`: real signatures, real docstrings,
       real return shapes, `raise NotImplementedError`.
-- [ ] **T0.9** `main.py` — CLI, `.env` load, `input()`-based approval callback.
-- [ ] **T0.10** `CLAUDE.md`, `ARCHITECTURE.md` skeleton, `TODO.md`, `README.md` skeleton;
-      `guidance/` folder with both Session 3 notebooks; `.env.example`; `.gitignore`.
-- [ ] **T0.11** Branch protection on `main` + PR template.
+- [x] **T0.9** `main.py` — CLI, `.env` load, `input()`-based approval callback.
+- [x] **T0.10** `CLAUDE.md`, `ARCHITECTURE.md` skeleton, `TODO.md`, `README.md` skeleton;
+      `guidance/` folder with both Session 3 notebooks; `.env.example`; `.gitignore`;
+      `requirements.txt`.
+- [~] **T0.11** PR template **done** (`.github/pull_request_template.md`); branch protection on
+      `main` is a GitHub server-side setting — apply manually in repo settings.
 
 **Definition of done for Phase 0:** `python main.py "list the components of this repo"`
 runs the full loop and fails only with `NotImplementedError` from the stubs.
