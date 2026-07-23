@@ -41,21 +41,21 @@ _API_KEY_ENV = "OPENCODE_API_KEY"
 
 # --- Model ids & prices ------------------------------------------------------
 #
-# BLOCKER (TODO T0.3): the exact Zen model ids and per-token prices are still
-# pending confirmation on Slack. The *structure* below is final; the string ids
-# and the numbers are placeholders. So a wrong id can be fixed without touching
-# code, both are overridable from the environment. Once Slack confirms, set the
-# real values in .env (OPENCODE_CHEAP_MODEL / OPENCODE_STRONG_MODEL) and update
-# the MODELS price table here.
+# Ids confirmed against the Zen `/models` listing; prices from the Zen pricing
+# page. Both are env-overridable so a swap needs no code change.
 #
 # Prices are USD per 1,000,000 tokens.
-CHEAP = os.environ.get("OPENCODE_CHEAP_MODEL", "zen/cheap")   # PENDING Slack: real id
-STRONG = os.environ.get("OPENCODE_STRONG_MODEL", "zen/strong")  # PENDING Slack: real id
+CHEAP = os.environ.get("OPENCODE_CHEAP_MODEL", "gpt-5.4-nano")
+STRONG = os.environ.get("OPENCODE_STRONG_MODEL", "gpt-5.5")
 
+# Keyed by literal model id, NOT by the CHEAP/STRONG variables: estimate_cost()
+# looks up whatever id the caller actually passed, which may be neither.
 MODELS: dict[str, dict[str, float]] = {
-    # id: {input, cached_input, output}  — USD per 1M tokens. PENDING Slack.
-    CHEAP: {"input": 0.0, "cached_input": 0.0, "output": 0.0},
-    STRONG: {"input": 0.0, "cached_input": 0.0, "output": 0.0},
+    # id: {input, cached_input, output}  — USD per 1M tokens.
+    "gpt-5.4-nano": {"input": 0.20, "cached_input": 0.02, "output": 1.25},
+    # gpt-5.5 is priced for the <=272K-token context tier; longer contexts are
+    # billed higher and are NOT modelled here.
+    "gpt-5.5": {"input": 5.00, "cached_input": 0.50, "output": 30.00},
 }
 
 
@@ -235,8 +235,8 @@ def estimate_cost(usage: dict[str, int], model: str = CHEAP) -> float:
       - `output_tokens` ALREADY includes reasoning tokens, billed at the normal
         output rate — no separate reasoning line.
 
-    Returns 0.0 for an unknown model or empty usage (prices are PENDING Slack;
-    see MODELS). Cost is derived, never authored — safe to recompute anytime.
+    Returns 0.0 for an unknown model or empty usage (only the ids in MODELS are
+    priced). Cost is derived, never authored — safe to recompute anytime.
     """
     price = MODELS.get(model)
     if not price or not usage:

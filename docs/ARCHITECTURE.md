@@ -58,10 +58,14 @@ store/knowledge_graph.json   (nodes · edges · decisions)
 - **Depends on:** `openai`, `python-dotenv`
 - **Note:** the notebooks import `from agentlib.tools import ...`; this repo standardizes on
   `agentlib.core` (same surface). See decision #7.
-- **Blocked:** exact Zen model ids + prices are placeholders pending Slack (TODO T0.3);
-  overridable via `OPENCODE_CHEAP_MODEL` / `OPENCODE_STRONG_MODEL` env, so no code change is
-  needed once known. `call()` accepts `prompt | messages`, `system`, `model`, `tools`,
+- **Models:** `CHEAP = gpt-5.4-nano`, `STRONG = gpt-5.5`, both confirmed live against the Zen
+  `/models` listing and priced in `MODELS`. Overridable via `OPENCODE_CHEAP_MODEL` /
+  `OPENCODE_STRONG_MODEL`. `call()` accepts `prompt | messages`, `system`, `model`, `tools`,
   `max_output_tokens`. `Result` fields as listed above are implemented.
+- **Known provider gap:** every `gemini-*` id is listed by Zen but 400s on both
+  `/responses` and `/chat/completions` (`Invalid JSON request body: Missing key at
+  ["contents"]` — Zen forwards the OpenAI-shaped body to Google untranslated). Do not
+  select a Gemini model. See decision #11.
 - **Status:** **done** (Phase 0)
 
 ### `agentlib/schemas.py` — schema derivation
@@ -134,7 +138,7 @@ store/knowledge_graph.json   (nodes · edges · decisions)
   (fail-safe: only an explicit `y` approves).
 - **Phase 0 DoD:** `python main.py "..."` runs the full loop and fails only with
   `NotImplementedError` from the stubs (verified against a stubbed `call`; a live run also
-  needs the Zen key + confirmed model ids, TODO T0.3).
+  needs the Zen key in `.env`).
 - **Status:** **done** (Phase 0)
 
 ---
@@ -182,7 +186,9 @@ component moved or was removed, so the decision may be stale and should be surfa
 | 8 | 2026-07-23 | schemas | `schema_for` derives `enum` from a `Literal[...]` param annotation | Requiring every author to hand-add enums after the fact | The tool stub signatures already declare `Literal[...]` for their constrained params; deriving the enum just reads the annotation the author wrote. Authored narrowing beyond the signature (numeric bounds, when-not prose) still sits on top. Needed `get_type_hints` to resolve PEP 563 string annotations. |
 | 9 | 2026-07-23 | loop | `truncated` is a first-class stopping condition on the model's OWN output | Treating returned text as an answer whenever it is non-empty | "It returned" ≠ "it finished" (Part B, B1 guard 2). Truncated text is routed to an error branch, never fed back as data. |
 | 10 | 2026-07-23 | loop | Stall = a repeated identical (name+args) call; a repeat of a *declined* call stops as `declined`, not `stalled` | Making a decline immediately terminal; letting the model spin forever | A decline first returns a `declined` result so the model can react and answer (Part B, B4, TODO T2.4). Only if the model re-issues the same blocked call does the loop stop — reported as `declined` (blocked action) vs `stalled` (general spin) so the trace says which. |
-| 11 | | | | | |
+| 11 | 2026-07-23 | agentlib | `CHEAP = gpt-5.4-nano`, `STRONG = gpt-5.5`; `MODELS` keyed by **literal model id**, not by the `CHEAP`/`STRONG` variables | Keying the price table by the `CHEAP`/`STRONG` symbols as originally stubbed | Both ids are env-overridable, so variable-keyed entries silently become the *wrong* prices under the *right* key the moment `.env` changes — and `estimate_cost(usage, model)` takes an arbitrary id anyway. Literal keys make an unpriced model miss the lookup and return `0.0` (visibly wrong) instead of returning a confidently wrong number. `gpt-5.5` is priced at its ≤272K context tier only; longer contexts bill higher and are not modelled. |
+| 12 | 2026-07-23 | agentlib | Gemini ids are excluded from selection despite appearing in Zen's `/models` list | Using `gemini-3-flash` as `CHEAP` (its listing implies support) | Zen 400s on every `gemini-*` id via both `/responses` and `/chat/completions`: `Invalid JSON request body: Missing key at ["contents"]`. `contents` is Google's native field, so Zen forwards our OpenAI-shaped body untranslated — a provider-side gap, not fixable here. Verified reproducible on `gemini-3-flash` and `gemini-3.5-flash-lite`, with `gpt-5-nano` succeeding on the identical code path. **A model appearing in `/models` is not evidence it works; smoke-test before pinning.** |
+| 13 | | | | | |
 
 ---
 
