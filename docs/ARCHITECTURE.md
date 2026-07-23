@@ -5,7 +5,7 @@
 > filled in by that owner as their work lands. Keep entries terse; this is read instead of
 > the code.
 >
-> Last updated: 2026-07-23 — Phase 0 foundation (Berat), branch `hw1/berat/phase0-foundation`
+> Last updated: 2026-07-23 — Phase 2 write path & safety (Dias), branch `hw1/dias/phase2-write-safety`
 
 ---
 
@@ -108,19 +108,45 @@ store/knowledge_graph.json   (nodes · edges · decisions)
 - **Contract:** _fill in on implementation_
 - **Status:** _stub_
 
-### `tools/decisions.py` — decision log
+### `tools/decisions.py` — decision log + integrity check
 <!-- OWNER: Dias -->
-- **Owns:** `append_decision_record(...)`, `verify_graph_integrity(...)`
-- **Contract:** append-only, reversible, ungated. `verify_graph_integrity` returns a
-  structured `{"error": ...}` on a corrupt/implausible graph rather than raising or
-  returning it as normal data — this is the loop's error branch (Part B, B2).
-- **Status:** _stub_
+- **Owns:** `append_decision_record(...)`, `verify_graph_integrity(...)`, plus the Phase 2
+  graph-file I/O helpers (repo-root-anchored path, call-time `RADF_GRAPH_PATH` override for
+  tests/demos, atomic writes) shared with `tools/graph_write` (decision #11).
+- **`append_decision_record`:** append-only, reversible, ungated. Returns the stored record
+  `{component, decision, rationale, status, ts}`. Blank fields →
+  `{"error": "invalid_decision_record"}`; an unreadable graph file →
+  `{"error": "graph_unreadable"}` and the file is never rewritten (decision #12). Only the
+  authored `decisions` layer is touched — never nodes/edges.
+- **`verify_graph_integrity`:** returns `{"ok": True, "scope", "checked"}` or the structured
+  `{"error": "graph_integrity_failed", "details": [...]}` the loop branches on (Part B, B2).
+  Checks: duplicate node ids · orphan edges · empty scan while source files exist ·
+  orphaned decisions (scope `all`; skipped while `nodes` is empty — decision #13).
+  A missing or non-JSON graph file is itself an integrity failure.
+- **Depends on:** stdlib only.
+- **Status:** **done** (Phase 2, T2.1 / T2.2)
 
 ### `tools/graph_write.py` — destructive graph edits
 <!-- OWNER: Dias -->
 - **Owns:** `prune_graph_node(...)`
 - **Contract:** **irreversible** — listed in `GATED`, requires explicit human approval.
-- **Status:** _stub_
+  Success: `{"removed", "edges_removed", "cascade"}`. Unknown node / missing file →
+  `{"error": "node_not_found", ...}`; non-JSON file → `{"error": "graph_unreadable"}`,
+  never modified. `cascade="node_only"` deliberately leaves orphan edges for
+  `verify_graph_integrity` to flag; the authored `decisions` layer is never cascaded —
+  a pruned component's decisions become orphans, surfaced not deleted (decision #14).
+- **Status:** **done** (Phase 2, T2.3)
+
+### `tests/smoke_hw1.py` — offline smoke tests
+<!-- OWNER: Dias -->
+- **Owns:** the T2.5 end-to-end suite. The model is SCRIPTED (`agentlib.loop.call`
+  monkeypatched with replayed `Result`s); the loop, guards, gate, registry and tools
+  are the real code.
+- **Covers:** both gate branches (declined blocks the write · approved prunes) · the
+  tool-error branch (B2) · the invalid-args branch · `max_steps` · `stalled` · derived
+  schema enums · derived-vs-authored invariants. The seeded-graph query test is written
+  and skipped pending T1.2. The live-model integration run is T3.2.
+- **Status:** **done** (Phase 2, T2.5; scripted-model by design while Zen credits are pending)
 
 ### `tools/__init__.py` — registry + schema assembly
 <!-- OWNER: Berat -->
@@ -182,7 +208,11 @@ component moved or was removed, so the decision may be stale and should be surfa
 | 8 | 2026-07-23 | schemas | `schema_for` derives `enum` from a `Literal[...]` param annotation | Requiring every author to hand-add enums after the fact | The tool stub signatures already declare `Literal[...]` for their constrained params; deriving the enum just reads the annotation the author wrote. Authored narrowing beyond the signature (numeric bounds, when-not prose) still sits on top. Needed `get_type_hints` to resolve PEP 563 string annotations. |
 | 9 | 2026-07-23 | loop | `truncated` is a first-class stopping condition on the model's OWN output | Treating returned text as an answer whenever it is non-empty | "It returned" ≠ "it finished" (Part B, B1 guard 2). Truncated text is routed to an error branch, never fed back as data. |
 | 10 | 2026-07-23 | loop | Stall = a repeated identical (name+args) call; a repeat of a *declined* call stops as `declined`, not `stalled` | Making a decline immediately terminal; letting the model spin forever | A decline first returns a `declined` result so the model can react and answer (Part B, B4, TODO T2.4). Only if the model re-issues the same blocked call does the loop stop — reported as `declined` (blocked action) vs `stalled` (general spin) so the trace says which. |
-| 11 | | | | | |
+| 11 | 2026-07-23 | tools (Phase 2) | Graph path is repo-root-anchored with a call-time `RADF_GRAPH_PATH` env override; writes are atomic (temp file + `os.replace`) | cwd-relative path; direct `json.dump` over the live file | CLI and tests run from different cwds; a crash mid-write must not truncate the file carrying the authored decisions layer |
+| 12 | 2026-07-23 | tools (Phase 2) | An unreadable (non-JSON) graph file is refused with `{"error": "graph_unreadable"}` — never recreated or rewritten | silently recreating the file from the empty shape | Recreating would destroy authored decisions — the one layer no process may regenerate (CLAUDE.md §6) |
+| 13 | 2026-07-23 | decisions | Orphan-decision check joins `component` against node ids ∪ node paths, and is skipped while `nodes` is empty | flagging every decision on an unscanned graph | Pre-scan, every decision would false-flag as orphaned — noise burying signal. Id-or-path join tolerates either id convention until T1.5 finalises it |
+| 14 | 2026-07-23 | graph_write | `cascade` stays **required with no default**; `node_only` leaves orphan edges for `verify_graph_integrity` to flag; the authored `decisions` layer is never cascaded (closes the TODO open question) | defaulting to `node_and_edges`; cascading decisions too | The model must state blast-radius intent explicitly; orphaned edges/decisions are surfaced by verify, not silently swept — pruning structure must never delete authored knowledge |
+| 15 | | | | | |
 
 ---
 
