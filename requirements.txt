@@ -1,0 +1,6 @@
+# RADF HW1 — deliberately minimal. No agent/LLM framework (CLAUDE.md §4).
+openai>=1.40.0
+python-dotenv>=1.0.0
+
+# Tests only
+pytest>=8.0.0

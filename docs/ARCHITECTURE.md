@@ -5,7 +5,7 @@
 > filled in by that owner as their work lands. Keep entries terse; this is read instead of
 > the code.
 >
-> Last updated: _(date / PR #)_
+> Last updated: 2026-07-23 — Phase 0 foundation (Berat), branch `hw1/berat/phase0-foundation`
 
 ---
 
@@ -56,29 +56,43 @@ store/knowledge_graph.json   (nodes · edges · decisions)
 - **Cost accounting:** input tokens already include cached tokens (cheaper rate); output
   tokens already include reasoning tokens (normal output rate).
 - **Depends on:** `openai`, `python-dotenv`
-- **Status:** _TBD_
+- **Note:** the notebooks import `from agentlib.tools import ...`; this repo standardizes on
+  `agentlib.core` (same surface). See decision #7.
+- **Blocked:** exact Zen model ids + prices are placeholders pending Slack (TODO T0.3);
+  overridable via `OPENCODE_CHEAP_MODEL` / `OPENCODE_STRONG_MODEL` env, so no code change is
+  needed once known. `call()` accepts `prompt | messages`, `system`, `model`, `tools`,
+  `max_output_tokens`. `Result` fields as listed above are implemented.
+- **Status:** **done** (Phase 0)
 
 ### `agentlib/schemas.py` — schema derivation
 <!-- OWNER: Berat -->
 - **Owns:** `schema_for(fn)` — derives a tool schema from signature + annotations + docstring.
-- **Contract notes:** enums and other narrowing are applied by the tool author on top of the
-  derived schema (see Part B, B1).
-- **Status:** _TBD_
+- **Contract notes:** a `Literal[...]` param annotation derives into a JSON-Schema `enum`
+  (decision #8); string annotations (PEP 563) are resolved via `get_type_hints`. All other
+  narrowing (numeric bounds, extra enums, "when NOT to call" prose) is applied by the tool
+  author on top of the derived schema (see Part B, B1).
+- **Status:** **done** (Phase 0)
 
 ### `agentlib/guards.py` — mechanical guardrails
 <!-- OWNER: Berat -->
-- **Owns:** `validate_args(schema, args)`, output/truncation validation, stall detection,
-  approval-gate policy (`GATED` set).
+- **Owns:** `validate_args(schema, args)`, `check_output(result)` (truncation),
+  `is_error_result(out)` (error-branch detection), `detect_stall(signatures)` +
+  `call_signature(...)`, `GATED` set + `requires_approval(name)`.
 - **Contract notes:** every guard routes its failure to its own branch; nothing returns a
-  failure as if it were valid data.
-- **Status:** _TBD_
+  failure as if it were valid data. `GATED = {"prune_graph_node"}` — only irreversible.
+- **Status:** **done** (Phase 0)
 
 ### `agentlib/loop.py` — the agent loop
 <!-- OWNER: Berat -->
 - **Owns:** `run_agent(user_msg, schemas, registry, approve, ...)`
-- **Stopping conditions:** `answered` · `max_steps` · `stalled` · `declined`
-- **Returns:** `{"answer", "steps", "trace", "stopped"}`
-- **Status:** _TBD_
+- **Stopping conditions:** `answered` · `max_steps` · `stalled` · `declined` · `truncated`.
+  A gate decline feeds a `declined` result back so the model can react (Part B, B4); the
+  loop terminates with `stopped="declined"` only if the model then re-issues the same blocked
+  call (decision #10). `truncated` guards the model's own output (decision #9).
+- **Branches (own-branch, never dressed as data):** invalid-args, gate/decline, tool-returned
+  structured error (B2). Tool output re-enters context wrapped as `{"result": ...}` data.
+- **Returns:** `{"answer", "steps", "trace", "stopped"}`; `trace` events carry a `branch` tag.
+- **Status:** **done** (Phase 0)
 
 ### `tools/repo_scan.py` — repository → graph
 <!-- OWNER: Alejandro -->
@@ -108,10 +122,20 @@ store/knowledge_graph.json   (nodes · edges · decisions)
 - **Contract:** **irreversible** — listed in `GATED`, requires explicit human approval.
 - **Status:** _stub_
 
+### `tools/__init__.py` — registry + schema assembly
+<!-- OWNER: Berat -->
+- **Owns:** `build_registry() -> (schemas, registry)`, module-level `SCHEMAS` / `REGISTRY`.
+  Imports every tool stub so the loop runs end-to-end from day one.
+- **Status:** **done** (Phase 0)
+
 ### `main.py` — CLI entry point
 <!-- OWNER: Berat -->
-- **Owns:** argument parsing, `.env` load, registry assembly, `input()`-based approval callback.
-- **Status:** _TBD_
+- **Owns:** argument parsing, `.env` load, registry assembly, `input()`-based approval callback
+  (fail-safe: only an explicit `y` approves).
+- **Phase 0 DoD:** `python main.py "..."` runs the full loop and fails only with
+  `NotImplementedError` from the stubs (verified against a stubbed `call`; a live run also
+  needs the Zen key + confirmed model ids, TODO T0.3).
+- **Status:** **done** (Phase 0)
 
 ---
 
@@ -154,7 +178,11 @@ component moved or was removed, so the decision may be stale and should be surfa
 | 4 | | indexing | GitNexus selected as the future structural indexer (post-HW1) | CodeGraph; continuing with hand-rolled `ast` scanning long-term | GitNexus stores the graph in an embedded graph DB (LadybugDB) and exposes a raw `cypher` tool plus a published schema resource, so custom entities and traversals are supported through the public API. CodeGraph is SQLite/FTS5 behind a single `codegraph_explore` tool — extending it means reaching into internals its own file-watcher continuously rewrites. |
 | 5 | | indexing | Decisions live in a **separate overlay**, joined to structure by `symbol_uid` — never written into indexer-owned nodes | enriching the indexer's nodes in place with decision metadata | Both candidate indexers re-index aggressively (CodeGraph on every file event, GitNexus on `analyze`). Anything injected into their extraction output is overwritten on the next sync, and couples our core contribution to their internal schema. The overlay makes re-indexing free and makes a stale reference visible as an orphan rather than a silent loss. |
 | 6 | | licensing | GitNexus is PolyForm Noncommercial; CodeGraph is MIT | — | Acceptable for coursework, recorded because it forecloses commercial use of this repo downstream. Revisit if the project outlives the course. |
-| 7 | | | | | |
+| 7 | 2026-07-23 | agentlib | Runtime module is `agentlib/core.py`; notebooks' `agentlib.tools` surface is preserved unchanged | Renaming the notebook import path in code; forking a second module | The ownership map (TODO) and component list (§3) authoritatively name `core.py`. Same functions (`call`, `Result`, `show`, `CHEAP`, `STRONG`, `MODELS`, `estimate_cost`). If a session needs the notebook path verbatim, add a one-line `agentlib/tools.py` re-export rather than duplicating logic. |
+| 8 | 2026-07-23 | schemas | `schema_for` derives `enum` from a `Literal[...]` param annotation | Requiring every author to hand-add enums after the fact | The tool stub signatures already declare `Literal[...]` for their constrained params; deriving the enum just reads the annotation the author wrote. Authored narrowing beyond the signature (numeric bounds, when-not prose) still sits on top. Needed `get_type_hints` to resolve PEP 563 string annotations. |
+| 9 | 2026-07-23 | loop | `truncated` is a first-class stopping condition on the model's OWN output | Treating returned text as an answer whenever it is non-empty | "It returned" ≠ "it finished" (Part B, B1 guard 2). Truncated text is routed to an error branch, never fed back as data. |
+| 10 | 2026-07-23 | loop | Stall = a repeated identical (name+args) call; a repeat of a *declined* call stops as `declined`, not `stalled` | Making a decline immediately terminal; letting the model spin forever | A decline first returns a `declined` result so the model can react and answer (Part B, B4, TODO T2.4). Only if the model re-issues the same blocked call does the loop stop — reported as `declined` (blocked action) vs `stalled` (general spin) so the trace says which. |
+| 11 | | | | | |
 
 ---
 
