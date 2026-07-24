@@ -1,19 +1,89 @@
-"""tools.decisions — decision log + integrity check (STUB CONTRACT).
+"""tools.decisions — decision log + integrity check.
 
-Owner: Dias Sarkytbaev (Phase 2, T2.1 / T2.2). Stub contract authored in Phase 0
-(T0.8). Do NOT change signatures, constrained params, or return shapes without
-agreement (CLAUDE.md §1).
+Owner: Dias Sarkytbaev (Phase 2, T2.1 / T2.2). Implemented against the stub
+contract authored in Phase 0 (T0.8): signatures, constrained params, and
+return shapes are unchanged.
 
-`verify_graph_integrity` is the tool whose ERROR the loop branches on (Part B, B2;
-TODO grading row "one tool error reaching the loop as its own branch"). It must
-RETURN a structured error, never raise and never return a bad value dressed as
-valid data.
+`verify_graph_integrity` is the tool whose ERROR the loop branches on (Part B,
+B2; TODO grading row "one tool error reaching the loop as its own branch"). It
+RETURNS a structured error, never raises and never returns a bad value dressed
+as valid data.
+
+This module also owns the Phase 2 graph-file I/O helpers (`_graph_path`,
+`_load_graph`, `_save_graph`), shared with `tools.graph_write` (same owner).
+If Phase 1 wants them too, lifting them into a shared module is a contract
+change to agree on first (CLAUDE.md §1).
 """
 
 from __future__ import annotations
 
-from typing import Literal
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal, Optional
 
+# --- Graph-file I/O (shared with tools.graph_write; see module docstring) -----
+
+# Repo root = parent of the tools/ package — stable whatever the caller's cwd.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_GRAPH_PATH = _REPO_ROOT / "store" / "knowledge_graph.json"
+
+
+def _graph_path() -> Path:
+    """Where the knowledge graph lives (ARCHITECTURE.md §4).
+
+    `RADF_GRAPH_PATH` is read at call time so tests/demos can point the tools
+    at a temporary file without touching store/ (decision #11).
+    """
+    override = os.environ.get("RADF_GRAPH_PATH")
+    return Path(override) if override else _DEFAULT_GRAPH_PATH
+
+
+def _empty_graph() -> dict:
+    """The empty graph shape from ARCHITECTURE.md §4."""
+    return {"nodes": [], "edges": [], "decisions": [], "meta": {}}
+
+
+def _load_graph(path: Path) -> Optional[dict]:
+    """Read the graph file. Missing file -> empty shape. Unreadable -> None.
+
+    None (unreadable/corrupt) is deliberately distinct from the empty shape
+    (absent): an unreadable file must never be silently recreated — that would
+    destroy the authored decisions layer (CLAUDE.md §6, decision #12).
+    """
+    if not path.exists():
+        return _empty_graph()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _save_graph(path: Path, graph: dict) -> None:
+    """Write the graph atomically: temp file + os.replace (decision #11).
+
+    A crash mid-write must not truncate the file that carries the authored
+    decisions layer.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(graph, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _source_files_exist() -> bool:
+    """True iff any Python source exists under the repo root (env dirs excluded)."""
+    skip = {".git", ".venv", "venv", "env", "__pycache__", ".pytest_cache",
+            "node_modules", "store"}
+    for p in _REPO_ROOT.rglob("*.py"):
+        if not any(part in skip for part in p.parts):
+            return True
+    return False
+
+
+# --- T2.1 — the decision log --------------------------------------------------
 
 def append_decision_record(
     component: str,
@@ -40,8 +110,38 @@ def append_decision_record(
         {"component": <str>, "decision": <str>, "rationale": <str>,
          "status": <str>, "ts": <iso8601 str>}
     """
-    raise NotImplementedError("Phase 2 (Dias): implement append_decision_record")
+    problems = [
+        f"{name} must be a non-empty string"
+        for name, value in (("component", component), ("decision", decision),
+                            ("rationale", rationale))
+        if not isinstance(value, str) or not value.strip()
+    ]
+    if problems:
+        # Caught at the door, surfaced as a structured error — never half-written.
+        return {"error": "invalid_decision_record", "details": problems}
 
+    path = _graph_path()
+    graph = _load_graph(path)
+    if graph is None:
+        return {
+            "error": "graph_unreadable",
+            "details": [f"{path} exists but is not valid JSON — refusing to "
+                        "overwrite the authored decisions layer (decision #12)"],
+        }
+
+    record = {
+        "component": component.strip(),
+        "decision": decision.strip(),
+        "rationale": rationale.strip(),
+        "status": status,
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    graph.setdefault("decisions", []).append(record)
+    _save_graph(path, graph)
+    return record
+
+
+# --- T2.2 — the integrity check (the loop's error branch) ---------------------
 
 def verify_graph_integrity(
     scope: Literal["nodes", "edges", "all"],
@@ -56,6 +156,9 @@ def verify_graph_integrity(
     Constrained param:
       scope  enum: "nodes", "edges", or "all".
 
+    When NOT to call: not needed after read-only lookups; run it after writes (a
+    scan or a prune) or when an answer depends on the graph being trustworthy.
+
     On failure this RETURNS (does not raise) a structured error so the loop can
     branch on it without the bad state ever re-entering context as valid data
     (Part B, B2):
@@ -63,4 +166,69 @@ def verify_graph_integrity(
     On success:
         {"ok": True, "scope": <str>, "checked": <int>}
     """
-    raise NotImplementedError("Phase 2 (Dias): implement verify_graph_integrity")
+    path = _graph_path()
+    if not path.exists():
+        return {
+            "error": "graph_integrity_failed",
+            "details": [f"graph file missing at {path} — run "
+                        "scan_repository_structure first"],
+        }
+    graph = _load_graph(path)
+    if graph is None:
+        return {
+            "error": "graph_integrity_failed",
+            "details": [f"graph file at {path} is not valid JSON"],
+        }
+
+    nodes = [n for n in (graph.get("nodes") or []) if isinstance(n, dict)]
+    edges = graph.get("edges") or []
+    decisions = graph.get("decisions") or []
+    node_ids = [n.get("id") for n in nodes]
+    # Decisions may reference a node by id or by path (id convention is
+    # Alejandro's T1.5 call) — accept either when resolving (decision #13).
+    known = set(node_ids) | {n.get("path") for n in nodes}
+    details: list[str] = []
+    checked = 0
+
+    if scope in ("nodes", "all"):
+        checked += len(nodes)
+        seen: set = set()
+        for nid in node_ids:
+            if nid in seen:
+                details.append(f"duplicate node id: {nid!r}")
+            else:
+                seen.add(nid)
+        if not nodes and _source_files_exist():
+            details.append("empty scan result: the graph has no nodes but "
+                           "source files exist under the repo root")
+
+    if scope in ("edges", "all"):
+        checked += len(edges)
+        id_set = set(node_ids)
+        for e in edges:
+            if not isinstance(e, dict):
+                details.append(f"malformed edge (not an object): {e!r}")
+                continue
+            for end in ("from", "to"):
+                if e.get(end) not in id_set:
+                    details.append(
+                        f"orphan edge {e.get('from')!r} -> {e.get('to')!r}: "
+                        f"'{end}' endpoint is not a known node id"
+                    )
+
+    if scope == "all":
+        checked += len(decisions)
+        # Skipped while nodes are empty: joining against an unscanned graph
+        # would false-flag every decision as orphaned (decision #13).
+        if nodes:
+            for d in decisions:
+                comp = d.get("component") if isinstance(d, dict) else None
+                if comp not in known:
+                    details.append(
+                        f"orphaned decision: component {comp!r} no longer "
+                        "resolves to a node (surfaced for review, not deleted)"
+                    )
+
+    if details:
+        return {"error": "graph_integrity_failed", "details": details}
+    return {"ok": True, "scope": scope, "checked": checked}
