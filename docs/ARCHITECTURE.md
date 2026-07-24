@@ -52,16 +52,22 @@ store/knowledge_graph.json   (nodes · edges · decisions)
 - **`Result` carries:** `.text`, `.tool_calls`, `.output_items`, `.status`, `.stop_reason`,
   `.truncated`, `.usage`
 - **Contract notes:** `truncated=True` means the call hit the output-token cap — *returned
-  text is not a finished result*. Callers must branch on it.
+  text is not a finished result*. Callers must branch on it. `output_items` is **replay-safe**:
+  `reasoning` items are dropped and the server `id` is stripped so the list can be fed straight
+  back as next-turn input without a provider 400 (decision #13); `raw` keeps the untouched response.
 - **Cost accounting:** input tokens already include cached tokens (cheaper rate); output
   tokens already include reasoning tokens (normal output rate).
 - **Depends on:** `openai`, `python-dotenv`
 - **Note:** the notebooks import `from agentlib.tools import ...`; this repo standardizes on
   `agentlib.core` (same surface). See decision #7.
-- **Blocked:** exact Zen model ids + prices are placeholders pending Slack (TODO T0.3);
-  overridable via `OPENCODE_CHEAP_MODEL` / `OPENCODE_STRONG_MODEL` env, so no code change is
-  needed once known. `call()` accepts `prompt | messages`, `system`, `model`, `tools`,
+- **Models:** `CHEAP = gpt-5.4-nano`, `STRONG = gpt-5.5`, both confirmed live against the Zen
+  `/models` listing and priced in `MODELS`. Overridable via `OPENCODE_CHEAP_MODEL` /
+  `OPENCODE_STRONG_MODEL`. `call()` accepts `prompt | messages`, `system`, `model`, `tools`,
   `max_output_tokens`. `Result` fields as listed above are implemented.
+- **Known provider gap:** every `gemini-*` id is listed by Zen but 400s on both
+  `/responses` and `/chat/completions` (`Invalid JSON request body: Missing key at
+  ["contents"]` — Zen forwards the OpenAI-shaped body to Google untranslated). Do not
+  select a Gemini model. See decision #11.
 - **Status:** **done** (Phase 0)
 
 ### `agentlib/schemas.py` — schema derivation
@@ -160,7 +166,7 @@ store/knowledge_graph.json   (nodes · edges · decisions)
   (fail-safe: only an explicit `y` approves).
 - **Phase 0 DoD:** `python main.py "..."` runs the full loop and fails only with
   `NotImplementedError` from the stubs (verified against a stubbed `call`; a live run also
-  needs the Zen key + confirmed model ids, TODO T0.3).
+  needs the Zen key in `.env`).
 - **Status:** **done** (Phase 0)
 
 ---
@@ -213,6 +219,9 @@ component moved or was removed, so the decision may be stale and should be surfa
 | 13 | 2026-07-23 | decisions | Orphan-decision check joins `component` against node ids ∪ node paths, and is skipped while `nodes` is empty | flagging every decision on an unscanned graph | Pre-scan, every decision would false-flag as orphaned — noise burying signal. Id-or-path join tolerates either id convention until T1.5 finalises it |
 | 14 | 2026-07-23 | graph_write | `cascade` stays **required with no default**; `node_only` leaves orphan edges for `verify_graph_integrity` to flag; the authored `decisions` layer is never cascaded (closes the TODO open question) | defaulting to `node_and_edges`; cascading decisions too | The model must state blast-radius intent explicitly; orphaned edges/decisions are surfaced by verify, not silently swept — pruning structure must never delete authored knowledge |
 | 15 | | | | | |
+| 11 | 2026-07-23 | agentlib | `CHEAP = gpt-5.4-nano`, `STRONG = gpt-5.5`; `MODELS` keyed by **literal model id**, not by the `CHEAP`/`STRONG` variables | Keying the price table by the `CHEAP`/`STRONG` symbols as originally stubbed | Both ids are env-overridable, so variable-keyed entries silently become the *wrong* prices under the *right* key the moment `.env` changes — and `estimate_cost(usage, model)` takes an arbitrary id anyway. Literal keys make an unpriced model miss the lookup and return `0.0` (visibly wrong) instead of returning a confidently wrong number. `gpt-5.5` is priced at its ≤272K context tier only; longer contexts bill higher and are not modelled. |
+| 12 | 2026-07-23 | agentlib | Gemini ids are excluded from selection despite appearing in Zen's `/models` list | Using `gemini-3-flash` as `CHEAP` (its listing implies support) | Zen 400s on every `gemini-*` id via both `/responses` and `/chat/completions`: `Invalid JSON request body: Missing key at ["contents"]`. `contents` is Google's native field, so Zen forwards our OpenAI-shaped body untranslated — a provider-side gap, not fixable here. Verified reproducible on `gemini-3-flash` and `gemini-3.5-flash-lite`, with `gpt-5-nano` succeeding on the identical code path. **A model appearing in `/models` is not evidence it works; smoke-test before pinning.** |
+| 13 | 2026-07-23 | core | `_to_result` sanitizes `output_items` for replay: **drop `reasoning` items** and **strip the server `id`** from each item before it is stored | Storing raw `model_dump()` items and replaying them verbatim | `output_items` is fed back as the next turn's input by the loop, so it may only hold items the Responses *input* schema accepts. Verified by controlled replay against `gpt-5.5`: replaying a `reasoning` item, or a `function_call` carrying its server-assigned `id`, both 400 with `Error from provider (Console): Upstream request failed`. Only dropping the reasoning item **and** stripping `id` (keeping `call_id`, the tool correlator) succeeds. The `gpt-5.4-nano` upstream tolerated both, so the bug surfaced **only on STRONG** with identical loop code — a reminder that provider strictness is model-specific (cf. decision #12). `Result.raw` still holds the untouched response. |
 
 ---
 

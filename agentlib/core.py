@@ -41,21 +41,21 @@ _API_KEY_ENV = "OPENCODE_API_KEY"
 
 # --- Model ids & prices ------------------------------------------------------
 #
-# BLOCKER (TODO T0.3): the exact Zen model ids and per-token prices are still
-# pending confirmation on Slack. The *structure* below is final; the string ids
-# and the numbers are placeholders. So a wrong id can be fixed without touching
-# code, both are overridable from the environment. Once Slack confirms, set the
-# real values in .env (OPENCODE_CHEAP_MODEL / OPENCODE_STRONG_MODEL) and update
-# the MODELS price table here.
+# Ids confirmed against the Zen `/models` listing; prices from the Zen pricing
+# page. Both are env-overridable so a swap needs no code change.
 #
 # Prices are USD per 1,000,000 tokens.
-CHEAP = os.environ.get("OPENCODE_CHEAP_MODEL", "zen/cheap")   # PENDING Slack: real id
-STRONG = os.environ.get("OPENCODE_STRONG_MODEL", "zen/strong")  # PENDING Slack: real id
+CHEAP = os.environ.get("OPENCODE_CHEAP_MODEL", "gpt-5.4-nano")
+STRONG = os.environ.get("OPENCODE_STRONG_MODEL", "gpt-5.5")
 
+# Keyed by literal model id, NOT by the CHEAP/STRONG variables: estimate_cost()
+# looks up whatever id the caller actually passed, which may be neither.
 MODELS: dict[str, dict[str, float]] = {
-    # id: {input, cached_input, output}  — USD per 1M tokens. PENDING Slack.
-    CHEAP: {"input": 0.0, "cached_input": 0.0, "output": 0.0},
-    STRONG: {"input": 0.0, "cached_input": 0.0, "output": 0.0},
+    # id: {input, cached_input, output}  — USD per 1M tokens.
+    "gpt-5.4-nano": {"input": 0.20, "cached_input": 0.02, "output": 1.25},
+    # gpt-5.5 is priced for the <=272K-token context tier; longer contexts are
+    # billed higher and are NOT modelled here.
+    "gpt-5.5": {"input": 5.00, "cached_input": 0.50, "output": 30.00},
 }
 
 
@@ -160,6 +160,28 @@ def call(
     return _to_result(resp)
 
 
+# Output items must be REPLAY-SAFE: `output_items` is fed straight back as the
+# next turn's input (loop.py), so it may only contain items the Responses input
+# schema accepts. Two things a raw model_dump() carries that the gpt-5.5 upstream
+# (behind Zen) rejects with a 400 on replay — verified empirically:
+#   - `reasoning` items: not accepted as replayed input here (no encrypted content
+#     round-trips through the proxy), so we drop them. The nano upstream tolerates
+#     them, which is why the bug only showed on the STRONG model.
+#   - the server-assigned `id` on a `function_call` item: replaying an item with its
+#     original server id 400s. `call_id` (the tool-call correlator) is kept; only
+#     the decorative server `id` is stripped.
+# See ARCHITECTURE.md decision record. `Result.raw` still holds the untouched resp.
+_REPLAY_DROP_TYPES = {"reasoning"}
+_SERVER_ONLY_FIELDS = {"id"}
+
+
+def _replay_safe(item_dict: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a replay-safe copy of one output item, or None to drop it entirely."""
+    if item_dict.get("type") in _REPLAY_DROP_TYPES:
+        return None
+    return {k: v for k, v in item_dict.items() if k not in _SERVER_ONLY_FIELDS}
+
+
 def _to_result(resp: Any) -> Result:
     """Parse a Responses SDK object into a `Result` (defensive against shape drift)."""
     output_items: list[dict[str, Any]] = []
@@ -167,7 +189,9 @@ def _to_result(resp: Any) -> Result:
 
     for item in getattr(resp, "output", None) or []:
         item_dict = item.model_dump() if hasattr(item, "model_dump") else dict(item)
-        output_items.append(item_dict)
+        safe = _replay_safe(item_dict)
+        if safe is not None:
+            output_items.append(safe)
         if item_dict.get("type") == "function_call":
             args = item_dict.get("arguments")
             if isinstance(args, str):
@@ -235,8 +259,8 @@ def estimate_cost(usage: dict[str, int], model: str = CHEAP) -> float:
       - `output_tokens` ALREADY includes reasoning tokens, billed at the normal
         output rate — no separate reasoning line.
 
-    Returns 0.0 for an unknown model or empty usage (prices are PENDING Slack;
-    see MODELS). Cost is derived, never authored — safe to recompute anytime.
+    Returns 0.0 for an unknown model or empty usage (only the ids in MODELS are
+    priced). Cost is derived, never authored — safe to recompute anytime.
     """
     price = MODELS.get(model)
     if not price or not usage:

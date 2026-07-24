@@ -50,10 +50,11 @@ schema in `ARCHITECTURE.md` §4, the `Result` fields in `agentlib/core.py`.
 - [x] **T0.2** `Result` dataclass: `.text`, `.tool_calls`, `.output_items`, `.status`,
       `.stop_reason`, `.truncated`, `.usage`. `truncated` is a first-class flag —
       "returned text" ≠ "finished".
-- [~] **T0.3** `CHEAP` / `STRONG` model ids + `MODELS`; `estimate_cost(usage)` (input tokens
+- [x] **T0.3** `CHEAP` / `STRONG` model ids + `MODELS`; `estimate_cost(usage)` (input tokens
       include cached at cached rate; output tokens include reasoning at output rate).
-      Structure + `estimate_cost` **done**; model ids/prices are env-overridable placeholders.
-      _Still blocked on: exact Zen model ids + per-token prices from Slack._
+      `CHEAP = gpt-5.4-nano` ($0.20 / $0.02 cached / $1.25 per 1M), `STRONG = gpt-5.5`
+      ($5.00 / $0.50 / $30.00, ≤272K tier). Both smoke-tested live. Gemini ids are listed
+      by Zen but non-functional — see ARCHITECTURE.md decision #12.
 - [x] **T0.4** `agentlib/schemas.py` — `schema_for(fn)` from signature + annotations + docstring.
 - [x] **T0.5** `agentlib/guards.py` — `validate_args`, truncation check, stall detection,
       `GATED` set, approval-policy helper.
@@ -143,6 +144,8 @@ Owns the decision log, the error branch, the one gated tool, and the smoke tests
 
 ## Open questions / blockers
 
-- [ ] Exact Zen model ids for `CHEAP` / `STRONG` + per-token prices (incl. cached rate) — **Slack**
+- [x] ~~Exact Zen model ids for `CHEAP` / `STRONG` + per-token prices (incl. cached rate)~~ —
+      resolved 2026-07-23 from Zen's `/models` listing + pricing page; no Slack input needed.
+      Cached-**write** is unpriced on the Zen table; `estimate_cost` does not model it.
 - [ ] Do re-scans merge into the existing graph or replace it? — Alejandro to decide, record in §5
 - [ ] Does `prune_graph_node` cascade to orphaned edges by default? — Dias to decide, record in §5
