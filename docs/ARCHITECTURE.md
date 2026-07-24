@@ -5,7 +5,7 @@
 > filled in by that owner as their work lands. Keep entries terse; this is read instead of
 > the code.
 >
-> Last updated: 2026-07-23 — Phase 2 write path & safety (Dias), branch `hw1/dias/phase2-write-safety`
+> Last updated: 2026-07-24 — Phase 1 read path (Alejandro), branch `hw1/alejandro/read-path`
 
 ---
 
@@ -102,17 +102,34 @@ store/knowledge_graph.json   (nodes · edges · decisions)
 
 ### `tools/repo_scan.py` — repository → graph
 <!-- OWNER: Alejandro -->
-- **Owns:** `scan_repository_structure(...)`
-- **Writes to:** `store/knowledge_graph.json` (nodes + edges)
-- **Contract:** _fill in on implementation — final signature, return shape, node/edge schema_
-- **Status:** _stub_
+- **Owns:** `scan_repository_structure(root, max_depth, kind)`
+- **Writes to:** `store/knowledge_graph.json` — regenerates the DERIVED `nodes`/`edges`
+  layer wholesale (decision #16); never touches authored `decisions` (CLAUDE.md §6).
+- **How:** two-pass `ast` walk (no regex). Pass 1 emits a node per module
+  (`{id, path, kind, symbols}`) with top-level def/class names; pass 2 resolves `import`/
+  `from ... import` targets (absolute + relative) and keeps only edges **between known
+  nodes** (`relation: "imports"`). Node id = dotted module path, `__init__.py` collapsing
+  to its package (decision #17). Reuses `tools.decisions._graph_path/_load_graph/_save_graph`.
+- **Reversible → ungated:** a re-scan reproduces the output; no approval ceremony.
+- **Contract:** `(root: str, max_depth: int 0..64, kind: Literal["python","markdown","any"])`
+  → `{"nodes": int, "edges": int, "root": str, "kind": str, "scanned_at": iso8601}`.
+  Structured error branches: `invalid_root` · `invalid_args` (bad `max_depth`/`kind`) ·
+  `graph_unreadable` (corrupt graph is refused, never overwritten — decision #12).
+- **Status:** **done** (Phase 1, T1.1)
 
 ### `tools/graph_query.py` — graph → answers
 <!-- OWNER: Alejandro -->
-- **Owns:** `query_component_graph(...)`
+- **Owns:** `query_component_graph(component, relation)`
 - **Reads:** `store/knowledge_graph.json`. Read-only, reversible, ungated.
-- **Contract:** _fill in on implementation_
-- **Status:** _stub_
+- **How:** resolves `component` by node `id` then by `path`; walks `edges` for the
+  requested `relation`. Returns de-duplicated, sorted `related` so an identical query is
+  deterministic (matters for the loop's stall guard).
+- **Contract:** `(component: str, relation: Literal["imports","imported_by","neighbors","all"])`
+  → `{"component", "relation", "found": bool, "node": {…}|None, "related": [id, …]}`.
+  `neighbors`/`all` span both directions. An ABSENT/empty graph is a legitimate
+  `found: false` answer; a CORRUPT graph is the one error branch (`graph_unreadable`) —
+  the distinction is deliberate (decision #18).
+- **Status:** **done** (Phase 1, T1.2)
 
 ### `tools/decisions.py` — decision log + integrity check
 <!-- OWNER: Dias -->
@@ -177,13 +194,17 @@ store/knowledge_graph.json   (nodes · edges · decisions)
 <!-- OWNER: Alejandro defines; Dias consumes -->
 ```jsonc
 {
-  "nodes":     [ { "id": "", "path": "", "kind": "", "symbols": [] } ],
-  "edges":     [ { "from": "", "to": "", "relation": "" } ],
-  "decisions": [ { "component": "", "decision": "", "rationale": "", "status": "", "ts": "" } ],
-  "meta":      { "scanned_at": "", "root": "" }
+  // nodes: one per module. id = dotted module path ("agentlib.core"); __init__.py
+  // collapses to its package id ("tools"). markdown nodes use the posix relpath as id.
+  "nodes":     [ { "id": "agentlib.core", "path": "agentlib/core.py", "kind": "python", "symbols": ["call", "Result"] } ],
+  // edges: internal import edges only (both endpoints are known nodes). relation = "imports".
+  "edges":     [ { "from": "agentlib.loop", "to": "agentlib.core", "relation": "imports" } ],
+  "decisions": [ { "component": "agentlib.core", "decision": "", "rationale": "", "status": "", "ts": "" } ],
+  "meta":      { "scanned_at": "<iso8601>", "root": "<scan root as passed>" }
 }
 ```
-_Authoritative version of this schema is filled in by the `repo_scan` PR._
+_Authoritative as of the Phase 1 `repo_scan`/`graph_query` PR (T1.5). `kind` ∈
+{"python","markdown"}; decisions join to structure on `component` == node `id` (or `path`)._
 
 **Invariant — structure and decisions are separate layers.** `nodes` and `edges` are *derived*: any
 scan may regenerate them wholesale, and nothing outside the scanner may hand-edit them. `decisions`
@@ -222,6 +243,9 @@ component moved or was removed, so the decision may be stale and should be surfa
 | 11 | 2026-07-23 | agentlib | `CHEAP = gpt-5.4-nano`, `STRONG = gpt-5.5`; `MODELS` keyed by **literal model id**, not by the `CHEAP`/`STRONG` variables | Keying the price table by the `CHEAP`/`STRONG` symbols as originally stubbed | Both ids are env-overridable, so variable-keyed entries silently become the *wrong* prices under the *right* key the moment `.env` changes — and `estimate_cost(usage, model)` takes an arbitrary id anyway. Literal keys make an unpriced model miss the lookup and return `0.0` (visibly wrong) instead of returning a confidently wrong number. `gpt-5.5` is priced at its ≤272K context tier only; longer contexts bill higher and are not modelled. |
 | 12 | 2026-07-23 | agentlib | Gemini ids are excluded from selection despite appearing in Zen's `/models` list | Using `gemini-3-flash` as `CHEAP` (its listing implies support) | Zen 400s on every `gemini-*` id via both `/responses` and `/chat/completions`: `Invalid JSON request body: Missing key at ["contents"]`. `contents` is Google's native field, so Zen forwards our OpenAI-shaped body untranslated — a provider-side gap, not fixable here. Verified reproducible on `gemini-3-flash` and `gemini-3.5-flash-lite`, with `gpt-5-nano` succeeding on the identical code path. **A model appearing in `/models` is not evidence it works; smoke-test before pinning.** |
 | 13 | 2026-07-23 | core | `_to_result` sanitizes `output_items` for replay: **drop `reasoning` items** and **strip the server `id`** from each item before it is stored | Storing raw `model_dump()` items and replaying them verbatim | `output_items` is fed back as the next turn's input by the loop, so it may only hold items the Responses *input* schema accepts. Verified by controlled replay against `gpt-5.5`: replaying a `reasoning` item, or a `function_call` carrying its server-assigned `id`, both 400 with `Error from provider (Console): Upstream request failed`. Only dropping the reasoning item **and** stripping `id` (keeping `call_id`, the tool correlator) succeeds. The `gpt-5.4-nano` upstream tolerated both, so the bug surfaced **only on STRONG** with identical loop code — a reminder that provider strictness is model-specific (cf. decision #12). `Result.raw` still holds the untouched response. |
+| 16 | 2026-07-24 | repo_scan | A re-scan **replaces** the derived `nodes`/`edges` wholesale (decisions preserved) | merging new scan results into the existing derived layer | Closes the TODO open question. "Structure is derived" (CLAUDE.md §6) means a scan is the single source of truth for structure — merging would let a deleted/renamed module linger as a stale node forever. Replacement makes the graph reflect the tree exactly; the authored `decisions` layer is loaded and written back untouched, and a now-dangling decision surfaces as an orphan via `verify_graph_integrity`, not as silent corruption. |
+| 17 | 2026-07-24 | repo_scan | Node id = **dotted module path**, `__init__.py` collapsing to its package id; markdown uses the posix relpath | filesystem path as id; keeping `__init__` in the id | The dotted form is what `import` statements name, so edge resolution is a direct string match against import targets — no path↔module translation. It also matches the ids the smoke fixtures and decision #13's id-or-path join already assume. Edges are kept only between known nodes, so imports of stdlib/third-party modules don't create dangling edges. |
+| 18 | 2026-07-24 | graph_query | An **absent/empty** graph is a valid `found: false` answer; only a **corrupt** graph is an error branch | raising/erroring whenever the component isn't found | Emptiness and corruption are different failures. "Not in the graph" is a real, useful answer the model acts on (the docstring steers it to scan). A non-JSON file is genuine corruption the loop must branch on (Part B, B2) rather than mistake for "no results". Keeping the tool total (never raising) is what lets the loop own every stopping decision. |
 
 ---
 
