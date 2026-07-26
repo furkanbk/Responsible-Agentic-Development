@@ -23,7 +23,9 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Optional
 
+from .context import AssembledContext
 from .core import CHEAP, call
+from .runlog import RunLog
 from .guards import (
     call_signature,
     check_output,
@@ -61,11 +63,14 @@ def run_agent(
     max_steps: int = 8,
     verbose: bool = True,
     system: Optional[str] = DEFAULT_SYSTEM,
+    context: Optional[AssembledContext] = None,
+    run_log: Optional[RunLog] = None,
 ) -> dict[str, Any]:
     """Drive the agent loop over `schemas`/`registry` until a stopping condition.
 
     Args:
-      user_msg  the user's request (becomes the first input item).
+      user_msg  the user's request (becomes the last input item — what must be
+                acted on sits at the end of what the model reads).
       schemas   tool schemas (from schema_for), passed to the model each turn.
       registry  name -> callable, the actual tools the loop dispatches.
       approve   callback(name, args) -> bool for gated tools. If a gated tool is
@@ -78,13 +83,35 @@ def run_agent(
       system    standing instructions sent every turn (Responses `instructions`).
                 Defaults to DEFAULT_SYSTEM, which steers the model to act through
                 tools and NOT self-gate in prose (the loop owns the real gate).
-                Pass None to run with no system prompt.
+                Pass None to run with no system prompt. Ignored when `context`
+                is given — the assembler owns `instructions` in that case.
+      context   an AssembledContext (agentlib.context). Supplies the pushed
+                instructions and the quoted data block. Omitting it runs the
+                bare HW1 loop, which is what the scripted tests do.
+      run_log   a RunLog to fill in and flush (agentlib.runlog). The monitor
+                grades these after the fact, so the log records what was
+                ASSEMBLED as well as what was done — "the agent ignored a rule"
+                and "the rule was never in context" must not look alike.
 
     Returns {"answer", "steps", "trace", "stopped"}. `trace` is a list of dicts,
     one per executed/declined tool call, each tagged with its branch
     ("ok" | "error" | "declined" | "invalid_args").
     """
-    messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
+    if context is not None:
+        system = context.instructions
+        messages: list[dict[str, Any]] = list(context.input_items(user_msg))
+    else:
+        messages = [{"role": "user", "content": user_msg}]
+
+    if run_log is not None:
+        run_log.request = run_log.request or user_msg
+        if context is not None:
+            run_log.instructions = context.instructions
+            run_log.data_blocks = list(context.data_blocks)
+            run_log.sources = dict(context.sources)
+        elif system:
+            run_log.instructions = system
+
     schema_by_name = {s["name"]: s for s in schemas}
     trace: list[dict[str, Any]] = []
     signatures: list[str] = []
@@ -109,11 +136,11 @@ def run_agent(
         if tag == "ERROR_BRANCH":
             if verbose:
                 print("  [TRUNCATED] model output hit the token cap — not an answer")
-            return _stop("truncated", None, step, trace)
+            return _stop("truncated", None, step, trace, run_log)
 
         # No tool call -> the model chose to answer. Done.
         if not r.tool_calls:
-            return _stop("answered", r.text, step, trace)
+            return _stop("answered", r.text, step, trace, run_log)
 
         # --- act: append the model's tool-call items, then dispatch each -----
         messages += r.output_items
@@ -129,7 +156,7 @@ def run_agent(
                 reason = "declined" if sig in declined_signatures else "stalled"
                 if verbose:
                     print(f"  [{reason.upper()}] repeated call {name}({args})")
-                return _stop(reason, None, step, trace)
+                return _stop(reason, None, step, trace, run_log)
 
             schema = schema_by_name.get(name)
 
@@ -177,10 +204,23 @@ def run_agent(
 
         step += 1
         if step >= max_steps:
-            return _stop("max_steps", None, step, trace)
+            return _stop("max_steps", None, step, trace, run_log)
 
 
 def _stop(stopped: str, answer: Optional[str], steps: int,
-          trace: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build the loop's return dict for a given stopping condition."""
-    return {"answer": answer, "steps": steps, "trace": trace, "stopped": stopped}
+          trace: list[dict[str, Any]],
+          run_log: Optional[RunLog] = None) -> dict[str, Any]:
+    """Build the loop's return dict, and flush the run log if there is one.
+
+    Flushing here rather than at the call site means EVERY stopping condition
+    is logged, including the ones nobody wants to look at. A monitor that only
+    ever sees successful runs is grading a filtered sample.
+    """
+    result = {"answer": answer, "steps": steps, "trace": trace, "stopped": stopped}
+    if run_log is not None:
+        run_log.steps = trace
+        run_log.stopped = stopped
+        run_log.answer = answer
+        run_log.flush()
+        result["run_id"] = run_log.run_id
+    return result

@@ -1,14 +1,18 @@
-"""main.py — RADF HW1 CLI entry point.
+"""main.py — RADF CLI entry point.
 
-Owner: Berat (T0.9). Loads `.env`, assembles the tool registry, and runs one
-query through the agent loop with an input()-based approval gate.
+Owner: Berat (T0.9, extended in HW2 T5.2). Loads `.env`, assembles the tool
+registry, and runs one query through the agent loop with an input()-based
+approval gate.
 
 Usage:
     python main.py "which components import agentlib.core?"
-    python main.py --model strong --max-steps 6 "list the components of this repo"
+    python main.py --user berat "can I lift the _load_graph helpers out?"
+    python main.py --user dias --thread review-42 --model strong "..."
 
-Phase 0 definition of done: this runs the full observe -> reason -> act -> verify
-loop and fails only with NotImplementedError from the (unimplemented) tool stubs.
+`--user` is the identity the runtime asserts. Memory and decisions are scoped to
+it, and everything the agent records is attributed to it. In a real deployment
+this comes from authentication, not from a flag — the point is that it comes
+from the runtime, never from the model.
 """
 
 from __future__ import annotations
@@ -18,8 +22,11 @@ import sys
 
 from dotenv import load_dotenv
 
+from agentlib.context import assemble
 from agentlib.core import CHEAP, STRONG, estimate_cost
-from agentlib.loop import run_agent
+from agentlib.loop import DEFAULT_SYSTEM, run_agent
+from agentlib.runlog import RunLog
+from agentlib.session import session_scope
 from tools import build_registry
 
 
@@ -49,6 +56,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--quiet", action="store_true", help="suppress per-step trace output",
     )
+    parser.add_argument(
+        "--user", default="anonymous",
+        help="the acting user id — scopes memory and attributes what is recorded",
+    )
+    parser.add_argument(
+        "--thread", default="default",
+        help="thread id within this user's session (default: default)",
+    )
+    parser.add_argument(
+        "--component", default="",
+        help="component the request is about; seeds the impact set so module "
+             "rules and decisions bind without a planner round",
+    )
     args = parser.parse_args(argv)
 
     # Load .env so OPENCODE_API_KEY (and optional model-id overrides) are present.
@@ -57,7 +77,24 @@ def main(argv: list[str] | None = None) -> int:
     model = STRONG if args.model == "strong" else CHEAP
     schemas, registry = build_registry()
 
-    try:
+    with session_scope(args.user, args.thread) as session:
+        from overlay.uid import resolve_uid
+
+        impact = [uid] if (uid := resolve_uid(args.component)) else []
+        context = assemble(
+            base_system=DEFAULT_SYSTEM,
+            query=args.query,
+            impact=impact,
+            session=session,
+        )
+        run_log = RunLog(
+            agent="cli", user_id=session.user_id, thread_id=session.thread_id,
+            request=args.query,
+        )
+        if not args.quiet:
+            print(f"  [SESSION] {session} | pushed: {context.sources['pushed']}")
+            print(f"  [CONTEXT] {len(context.data_blocks)} quoted block(s) pulled")
+
         result = run_agent(
             args.query,
             schemas,
@@ -66,11 +103,9 @@ def main(argv: list[str] | None = None) -> int:
             model=model,
             max_steps=args.max_steps,
             verbose=not args.quiet,
+            context=context,
+            run_log=run_log,
         )
-    except NotImplementedError as e:
-        # Expected in Phase 0: the loop reached a tool stub. Report it honestly.
-        print(f"\n[stub] reached an unimplemented tool: {e}", file=sys.stderr)
-        return 2
 
     print("\n" + "=" * 60)
     print("stopped:", result["stopped"], "| steps:", result["steps"])
@@ -79,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         print("trace  :")
         for ev in result["trace"]:
             print(f"    [{ev['branch']}] {ev['tool']}({ev['args']}) -> {ev['output']}")
+    print("run_id :", result.get("run_id"))
     return 0
 
 

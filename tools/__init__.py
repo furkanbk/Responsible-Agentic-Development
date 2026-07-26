@@ -20,17 +20,31 @@ from typing import Any, Callable
 
 from agentlib.schemas import schema_for
 
-from .decisions import append_decision_record, verify_graph_integrity
+from .decisions import (
+    append_decision_record,
+    retrieve_decisions,
+    verify_graph_integrity,
+)
 from .graph_query import query_component_graph
 from .graph_write import prune_graph_node
+from .memory_tools import retrieve_memory, save_memory
 from .repo_scan import scan_repository_structure
 
-# Every callable tool, in the order the model sees them. Read/append/verify
+# Every callable tool, in the order the model sees them. Reads and appends
 # before the destructive prune.
+#
+# The two lookups sit next to each other on purpose, because the pair is the
+# point: `query_component_graph` answers "what is this connected to" from the
+# DERIVED layer, `retrieve_decisions` answers "why is it like this" from the
+# AUTHORED overlay. Two lookups per question, never one merged store
+# (ARCHITECTURE.md §6.1).
 TOOL_FUNCTIONS: list[Callable] = [
     scan_repository_structure,
     query_component_graph,
+    retrieve_decisions,
+    retrieve_memory,
     append_decision_record,
+    save_memory,
     verify_graph_integrity,
     prune_graph_node,
 ]
