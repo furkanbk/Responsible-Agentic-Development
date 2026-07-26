@@ -14,7 +14,7 @@ Branch: `hw1/<owner>/<short-task>` · `hw2/<owner>/<short-task>` · PR into `mai
 | You are | Your next task | Blocked by | Read first |
 |---|---|---|---|
 | **Berat** | *(all assigned HW2 work done — reviewing PRs, then T8.3 live runs with Alejandro)* | T7.1 | this file, then §Contracts |
-| **Alejandro** | **T6.2** `agents/planner.py`, then **T7.1** `tools/apply_change.py` | **nothing — T6.1 is merged** | §Contracts (plan dict), `agents/envelope.py` |
+| **Alejandro** | *(T6.2 planner + T7.1 apply_change done, branch `hw2/alejandro/planner-and-write` — then T8.3 live runs with Berat)* | **nothing** | §Contracts (plan dict), `agents/envelope.py` |
 | **Dias** | **T7.5** the log fixture, then **T7.3** `monitor/judge.py` | **nothing** | §Contracts (run-log record), `agentlib/runlog.py` |
 
 The three tracks are deliberately independent. Alejandro's planner and Dias's monitor never
@@ -361,18 +361,19 @@ The authored, durable half. Survives every re-index; no scan may touch it.
 
 The graph-consuming agent, and the natural extension of the HW1 read path you own.
 
-- [ ] **T6.2** `agents/planner.py` — takes a change request, calls `query_component_graph` to
+- [x] **T6.2** `agents/planner.py` — takes a change request, calls `query_component_graph` to
       build the impact set, calls `retrieve_decisions` for every module in it, and emits the
       frozen plan dict wrapped in an `AgentResult`.
-- [ ] **T6.2a** Impact set is **transitive on `imported_by`**, not just direct. "What breaks if I
-      change this" is the whole product; one hop is not an answer. Cap the depth and say what the
-      cap is — an uncapped walk on a real repo returns the whole tree and is useless.
-- [ ] **T6.2b** `open_questions` is populated when two retrieved decisions conflict, or when the
-      request names a component that is not in the graph. An empty list is a claim that the
-      executor may act alone, so it must be earned.
-- [ ] **T6.2c** `tests/test_planner.py` — scripted model (copy the `scripted_call` helper from
-      `tests/test_smoke_hw1.py`); assert the plan dict shape, the transitive impact set on a
-      synthetic graph, and that a conflict lands in `open_questions`.
+- [x] **T6.2a** Impact set is **transitive on `imported_by`**, not just direct. Capped at
+      `max_hops` (default 2) in pure Python — the model is called once for the seed only, so the
+      cap is the code's decision (decision #34). `max_hops` is recorded in the plan as
+      `impact_max_hops`, so it is visible in the trace.
+- [x] **T6.2b** `open_questions` is populated when two retrieved decisions conflict (one's
+      `decision` is the other's `rejected` alternative — decision #35), or when the request names
+      a component that is not in the graph. An empty list is earned, not defaulted.
+- [x] **T6.2c** `tests/test_planner.py` — 10 tests; scripted model, the transitive impact set and
+      the depth cap on a synthetic graph, seed absent → `needs_input`, and a seeded conflict →
+      `open_questions`.
 
 **Depends on:** T6.1 only. The executor is not needed — a plan dict is a literal in a test.
 
@@ -399,22 +400,21 @@ These two run fully in parallel with each other and with Phase 6b.
 
 ### 7a — The gated file write (Alejandro)
 
-- [ ] **T7.1** `tools/apply_change.py` — `apply_change(path, new_content)`, added to `GATED` in
-      `agentlib/guards.py` beside `prune_graph_node`. HW1's gate machinery carries over
+- [x] **T7.1** `tools/apply_change.py` — `apply_change(path, new_content, intent)`, added to
+      `GATED` in `agentlib/guards.py` beside `prune_graph_node`. HW1's gate machinery carries over
       unchanged, which is the point: the riskiest new capability needs no new safety mechanism.
-- [ ] **T7.1a** **Path confinement, checked in the tool and never in the prompt.** Resolve the
-      target and refuse anything outside the repo root, plus a denylist: `.env`, `.git/`,
-      `store/`, `overlay/`. Watch `..` traversal and symlinks — resolve first, then compare.
-      Returns `{"error": "path_outside_scope"}`; never raises.
-- [ ] **T7.1b** **Impact-set confinement.** Only files whose `symbol_uid` is in the plan's
-      `impacted` list may be written. This is what makes the planner's output load-bearing
-      instead of advisory, and a write outside it is a *serious violation* for the monitor.
-      Returns `{"error": "outside_impact_set", "impacted": [...]}`.
-- [ ] **T7.1c** Record a **before-hash** (sha256) and the after-hash in the return value, so the
-      run log shows exactly what landed and a bad run is revertible via git.
-- [ ] **T7.1d** `tests/test_apply_change.py` — a path outside the repo root, `.env`, a `..`
-      traversal, and a file outside a literal plan dict each return an error branch **and leave
-      the file byte-identical**. Plus one approved write that actually lands.
+- [x] **T7.1a** **Path confinement, in the tool never in the prompt.** Resolve-then-compare
+      against the repo root + `DENYLIST` (shared with `read_source`), so `..` and symlinks are
+      collapsed first. Returns `{"error": "path_outside_scope"}`; never raises.
+- [x] **T7.1b** **Impact-set confinement** against the ambient `current_impact_set()` (never a
+      parameter — decision #36). Empty set denies every write. Returns
+      `{"error": "outside_impact_set", "impacted": [...]}`, or `no_plan` when no set is in force.
+- [x] **T7.1c** Records `before_sha` / `after_sha` (sha256) in the return value, so the run log
+      shows exactly what landed and a bad run is revertible via git.
+- [x] **T7.1d** `tests/test_apply_change.py` — 13 tests: path outside root, `.env`, `..`
+      traversal, denylisted stores, and a file outside the impact set each return an error branch
+      **and leave the file byte-identical**; plus `no_plan`, the intent guards, and one approved
+      write that lands with both hashes.
 
 **Depends on:** T6.1 (the plan shape). Not on the planner or the executor.
 

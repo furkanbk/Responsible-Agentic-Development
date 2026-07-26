@@ -381,8 +381,11 @@ class TestSchemas:
         )
         assert errs and "not in" in errs[0]
 
-    def test_only_the_irreversible_tool_is_gated(self):
-        assert GATED == {"prune_graph_node"}
+    def test_only_the_irreversible_tools_are_gated(self):
+        # HW2 (T7.1): apply_change overwrites files wholesale, so it joins GATED
+        # beside prune_graph_node. Both are irreversible; nothing reversible is
+        # gated (no ceremony where it is not earned — CLAUDE.md §5).
+        assert GATED == {"prune_graph_node", "apply_change"}
 
 
 # --- read path through the loop (T1.2 landed in PR #5) ------------------------

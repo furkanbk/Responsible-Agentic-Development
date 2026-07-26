@@ -22,6 +22,9 @@ import hashlib
 from pathlib import Path
 from typing import Any, Literal, Optional
 
+from agentlib.session import current_impact_set
+from overlay.uid import resolve_uid
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Never writable, whatever the plan says. Secrets, git internals, and the two
@@ -33,6 +36,39 @@ DENYLIST = (".env", ".git", "store", "overlay", ".venv")
 def sha256_of(text: str) -> str:
     """Content hash, used for the before/after record in the run log."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _confine(path: str) -> tuple[Path | None, dict | None]:
+    """Resolve `path` inside the repo, or return a structured refusal.
+
+    Same shape and rules as `tools.read_source._confine` (they share `DENYLIST`
+    so the two cannot drift): resolve BEFORE comparing so `..` and symlinks are
+    collapsed, then check the target is under the repo root and its top segment
+    is not denylisted. This is T7.1a, and it lives in the tool — never in the
+    prompt — because by the time a human is reading the gate prompt they are
+    approving a path the model already chose.
+    """
+    try:
+        target = (_REPO_ROOT / path).resolve()
+    except (OSError, ValueError) as exc:
+        return None, {"error": "path_outside_scope", "details": [str(exc)]}
+
+    if target != _REPO_ROOT and _REPO_ROOT not in target.parents:
+        return None, {"error": "path_outside_scope",
+                      "details": [f"{path!r} resolves outside the repository"]}
+
+    try:
+        rel_parts = target.relative_to(_REPO_ROOT).parts
+    except ValueError:
+        return None, {"error": "path_outside_scope",
+                      "details": [f"{path!r} resolves outside the repository"]}
+
+    if rel_parts and rel_parts[0] in DENYLIST:
+        return None, {"error": "path_outside_scope",
+                      "details": [f"{rel_parts[0]!r} is off limits to tools — "
+                                  "secrets, git internals, and the agent's own "
+                                  "stores are never writable"]}
+    return target, None
 
 
 def apply_change(
@@ -83,7 +119,66 @@ def apply_change(
       * A refused write must leave the file BYTE-IDENTICAL. Check first, write
         second; never truncate-then-validate.
     """
-    raise NotImplementedError(
-        "T7.1 (Alejandro): implement path confinement, impact-set confinement, "
-        "and the before/after hash record. See the docstring for the contract."
-    )
+    if not isinstance(path, str) or not path.strip():
+        return {"error": "invalid_args", "details": ["path must be a non-empty string"]}
+    if not isinstance(new_content, str):
+        return {"error": "invalid_args", "details": ["new_content must be a string"]}
+    if intent not in ("edit", "create"):
+        return {"error": "invalid_args",
+                "details": [f"intent must be 'edit' or 'create', got {intent!r}"]}
+
+    clean = path.strip()
+
+    # T7.1a — path confinement. Refuse before looking at the plan or the disk:
+    # a path outside the repo or on the denylist is refused whatever the plan says.
+    target, refusal = _confine(clean)
+    if refusal:
+        return refusal
+
+    # T7.1b — impact-set confinement. The set is ambient (the executor puts it
+    # there with `impact_scope`); an EMPTY set denies every write. This is what
+    # makes the planner's output load-bearing rather than advisory.
+    impact = current_impact_set()
+    if not impact:
+        return {"error": "no_plan",
+                "details": ["no impact set in force — a plan must authorise the write"]}
+    uid = resolve_uid(clean)
+    if uid not in impact:
+        return {"error": "outside_impact_set", "impacted": list(impact)}
+
+    exists = target.is_file()
+    if intent == "edit" and not exists:
+        return {"error": "file_missing",
+                "details": [f"{clean!r} does not exist; use intent='create' to make it"]}
+    if intent == "create" and exists:
+        return {"error": "file_exists",
+                "details": [f"{clean!r} already exists; use intent='edit' to replace it"]}
+
+    # T7.1c — before-hash. Read the current bytes (only when editing) BEFORE the
+    # write, so the run log records exactly what was replaced and a bad run is
+    # revertible via git. Every branch above returned already, so reaching here
+    # means the write is authorised and nothing has been touched yet.
+    before_sha: Optional[str] = None
+    if exists:
+        try:
+            before_sha = sha256_of(target.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            return {"error": "file_missing",
+                    "details": [f"cannot read {clean!r} before writing: {exc}"]}
+
+    try:
+        if intent == "create":
+            target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(new_content, encoding="utf-8")
+    except OSError as exc:
+        return {"error": "path_outside_scope",
+                "details": [f"cannot write {clean!r}: {exc}"]}
+
+    return {
+        "path": clean,
+        "written": True,
+        "intent": intent,
+        "before_sha": before_sha,
+        "after_sha": sha256_of(new_content),
+        "bytes": len(new_content.encode("utf-8")),
+    }
