@@ -132,8 +132,15 @@ class TestScan:
         assert "README.md" in {n["id"] for n in g["nodes"]}
         assert "pkg.a" in {n["id"] for n in g["nodes"]}
 
-    def test_rescan_replaces_derived_but_preserves_decisions(self, sample_repo, graph_env):
-        # Seed a graph with an AUTHORED decision + stale derived data.
+    def test_rescan_replaces_derived_and_migrates_decisions_out(self, sample_repo, graph_env):
+        """Updated for HW2: the authored layer is preserved by MOVING it.
+
+        HW1 asserted the decision was still in the JSON after a rescan. As of
+        HW2 the authored layer lives in the overlay, so the same invariant —
+        a scan never loses authored knowledge — is now proved by the record
+        turning up in the overlay instead. The scan migrates before dropping
+        the legacy key, so it can never be the thing that loses it.
+        """
         graph_env.write_text(json.dumps({
             "nodes": [{"id": "stale", "path": "stale.py", "kind": "python", "symbols": []}],
             "edges": [], "decisions": [{"component": "pkg.a", "decision": "keep me",
@@ -145,8 +152,14 @@ class TestScan:
         scan_repository_structure(str(sample_repo), max_depth=3, kind="python")
         g = json.loads(graph_env.read_text(encoding="utf-8"))
         assert "stale" not in {n["id"] for n in g["nodes"]}   # derived replaced wholesale
-        assert len(g["decisions"]) == 1                        # authored layer preserved
-        assert g["decisions"][0]["decision"] == "keep me"
+        assert "decisions" not in g                            # the JSON is purely derived now
+
+        from overlay import db as overlay_db
+        conn = overlay_db.connect()
+        rows = overlay_db.query_decisions(conn, user_id="anyone")
+        conn.close()
+        assert [r["decision"] for r in rows] == ["keep me"]    # authored layer preserved
+        assert rows[0]["symbol_uid"] == "Module:pkg.a"
 
     def test_invalid_root_is_a_structured_error(self, graph_env):
         out = scan_repository_structure("/no/such/dir", max_depth=2, kind="python")

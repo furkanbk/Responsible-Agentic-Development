@@ -1,20 +1,24 @@
-"""tests/smoke_hw1.py — end-to-end smoke tests for HW1 (T2.5).
+"""tests/test_smoke_hw1.py — end-to-end smoke tests for HW1 (T2.5).
 
-Owner: Dias Sarkytbaev.
+Owner: Dias Sarkytbaev (HW1). Amended by Berat for HW2, where the authored
+decisions layer moved to the overlay — see the note on TestAppendDecisionRecord.
+
+Renamed from `smoke_hw1.py` in HW2: the old name does not match pytest's
+`test_*.py` discovery pattern, so `pytest tests/` silently collected none of
+these. It only ever ran when named explicitly.
 
 The model is SCRIPTED: `agentlib.loop.call` is monkeypatched with a fake that
 replays a fixed sequence of `Result`s. That keeps the tests deterministic and
-runnable offline (Zen team credits are still pending) while exercising the
-REAL loop, guards, gate, registry and tools end to end. The live-model
-integration run is T3.2.
+runnable offline while exercising the REAL loop, guards, gate, registry and
+tools end to end. The live-model integration run is T8.3.
 
 Covers (T2.5): corrupt fixture -> the error branch fires and the loop does not
 treat it as data; gate declined -> the write is blocked; gate approved -> the
 prune runs; max-step cap trips on a forced loop; stall detection; schema
-constraints. The "seeded graph -> query returns expected node" case is written
-but skipped until T1.2 (Alejandro) lands.
+constraints. The "seeded graph -> query returns expected node" case is no longer
+skipped — T1.2 landed in PR #5.
 
-Run:  python -m pytest tests/smoke_hw1.py -v
+Run:  python -m pytest tests/test_smoke_hw1.py -v
 """
 
 from __future__ import annotations
@@ -30,7 +34,13 @@ from agentlib.guards import GATED, validate_args
 from agentlib.loop import run_agent
 from agentlib.schemas import schema_for
 from tools import build_registry
-from tools.decisions import append_decision_record, verify_graph_integrity
+from agentlib.session import session_scope
+from overlay import db as overlay_db
+from tools.decisions import (
+    append_decision_record,
+    retrieve_decisions,
+    verify_graph_integrity,
+)
 from tools.graph_write import prune_graph_node
 
 # --- fixtures & scripted-model helpers ---------------------------------------
@@ -97,38 +107,71 @@ def answer(text: str) -> Result:
 
 
 class TestAppendDecisionRecord:
-    def test_appends_and_preserves_the_derived_layer(self, graph_file):
-        rec = append_decision_record(
-            "agentlib.loop", "test models are scripted",
-            "offline determinism while team credits are pending",
-            status="accepted",
-        )
+    """Updated for HW2: decisions write to the overlay, not the JSON graph.
+
+    The HW1 property under test is unchanged — an append never disturbs the
+    derived layer — but it is now guaranteed by the two layers being in two
+    different files rather than by this function remembering not to touch a key.
+    """
+
+    def test_writes_to_the_overlay_and_leaves_the_derived_layer_alone(self, graph_file):
+        before = graph_file.read_bytes()
+        with session_scope("berat"):
+            rec = append_decision_record(
+                "agentlib.loop", "test models are scripted",
+                "offline determinism while team credits are pending",
+                status="accepted",
+            )
         assert rec["component"] == "agentlib.loop" and rec["ts"]
-        stored = json.loads(graph_file.read_text(encoding="utf-8"))
-        assert len(stored["decisions"]) == 2            # seed + new, append-only
-        assert len(stored["nodes"]) == 2                # derived layer untouched
-        assert stored["decisions"][-1]["status"] == "accepted"
+        assert rec["author_id"] == "berat"              # from the session, not the model
+        assert rec["symbol_uid"] == "Module:agentlib.loop"
+        assert graph_file.read_bytes() == before        # derived layer untouched
 
-    def test_creates_the_file_when_missing(self, tmp_path, monkeypatch):
-        path = tmp_path / "fresh.json"
-        monkeypatch.setenv("RADF_GRAPH_PATH", str(path))
-        rec = append_decision_record("x", "d", "r", status="proposed")
-        assert "error" not in rec and path.exists()
-        stored = json.loads(path.read_text(encoding="utf-8"))
-        assert stored["decisions"][0]["status"] == "proposed"
+        conn = overlay_db.connect()
+        rows = overlay_db.query_decisions(conn, user_id="berat")
+        conn.close()
+        assert [r["decision"] for r in rows] == ["test models are scripted"]
 
-    def test_refuses_to_overwrite_a_corrupt_file(self, tmp_path, monkeypatch):
+    def test_creates_the_overlay_when_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RADF_DB_PATH", str(tmp_path / "fresh.db"))
+        with session_scope("berat"):
+            rec = append_decision_record("x", "d", "r", status="proposed")
+        assert "error" not in rec and (tmp_path / "fresh.db").exists()
+        assert rec["status"] == "proposed"
+
+    def test_a_corrupt_graph_no_longer_blocks_the_authored_layer(self, tmp_path, monkeypatch):
+        """HW2 improvement: the two layers fail independently.
+
+        Under HW1 a corrupt derived file blocked decision writes, because both
+        layers shared it. Now a broken scan cannot stop an engineer recording
+        why something is the way it is — and the corrupt file is still never
+        rewritten (the rule behind decision #12).
+        """
         path = tmp_path / "corrupt.json"
         path.write_text("{ this is not json", encoding="utf-8")
         monkeypatch.setenv("RADF_GRAPH_PATH", str(path))
-        out = append_decision_record("x", "d", "r", status="accepted")
-        assert out["error"] == "graph_unreadable"
-        # The authored layer was NOT destroyed by a rewrite (decision #12).
+        with session_scope("berat"):
+            out = append_decision_record("x", "d", "r", status="accepted")
+        assert "error" not in out
         assert path.read_text(encoding="utf-8") == "{ this is not json"
 
     def test_rejects_blank_fields_at_the_door(self, graph_file):
-        out = append_decision_record("  ", "d", "r", status="proposed")
+        with session_scope("berat"):
+            out = append_decision_record("  ", "d", "r", status="proposed")
         assert out["error"] == "invalid_decision_record"
+
+    def test_refuses_to_write_without_a_session(self, graph_file):
+        """Identity comes from the runtime. No session, no attributable author."""
+        out = append_decision_record("x", "d", "r", status="accepted")
+        assert out["error"] == "no_session"
+
+    def test_private_decisions_do_not_cross_users(self, graph_file):
+        with session_scope("berat"):
+            append_decision_record("agentlib.loop", "berat's own note", "taste",
+                                   status="accepted", visibility="private")
+        with session_scope("dias"):
+            seen = retrieve_decisions("agentlib.loop")
+        assert seen["count"] == 0
 
 
 # --- T2.2 verify_graph_integrity ---------------------------------------------
@@ -136,8 +179,10 @@ class TestAppendDecisionRecord:
 
 class TestVerifyGraphIntegrity:
     def test_ok_on_a_healthy_graph(self, graph_file):
+        # 2 nodes + 1 edge + 0 overlay decisions (the seed's `decisions[]` is a
+        # legacy key the check no longer reads — the overlay is the authored layer).
         out = verify_graph_integrity(scope="all")
-        assert out == {"ok": True, "scope": "all", "checked": 4}  # 2n + 1e + 1d
+        assert out == {"ok": True, "scope": "all", "checked": 3}
 
     def test_missing_file_is_a_structured_error(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RADF_GRAPH_PATH", str(tmp_path / "absent.json"))
@@ -152,18 +197,27 @@ class TestVerifyGraphIntegrity:
                            "kind": "python", "symbols": []})       # duplicate id
         g["edges"].append({"from": "ghost", "to": "agentlib.core",
                            "relation": "imports"})                 # orphan edge
-        g["decisions"].append({"component": "gone.module", "decision": "d",
-                               "rationale": "r", "status": "accepted",
-                               "ts": "2026-07-23T00:00:00+00:00"})  # orphaned
         path = tmp_path / "bad.json"
         path.write_text(json.dumps(g), encoding="utf-8")
         monkeypatch.setenv("RADF_GRAPH_PATH", str(path))
+
+        # The orphan now lives in the overlay: a decision about a component that
+        # is no longer in the graph. This is the cross-store consistency check.
+        with session_scope("berat"):
+            append_decision_record("gone.module", "d", "r", status="accepted")
+
         out = verify_graph_integrity(scope="all")
         assert out["error"] == "graph_integrity_failed"
         blob = " | ".join(out["details"])
         assert "duplicate node id" in blob
         assert "orphan edge" in blob
         assert "orphaned decision" in blob            # surfaced, never deleted
+        assert "Module:gone.module" in blob
+
+        # Surfaced, NOT deleted — the record is still there to be reviewed.
+        conn = overlay_db.connect()
+        assert len(overlay_db.query_decisions(conn, user_id="berat")) == 1
+        conn.close()
 
     def test_scope_filters_which_checks_run(self, tmp_path, monkeypatch):
         g = seeded_graph()
@@ -331,11 +385,9 @@ class TestSchemas:
         assert GATED == {"prune_graph_node"}
 
 
-# --- blocked on Phase 1 -------------------------------------------------------
+# --- read path through the loop (T1.2 landed in PR #5) ------------------------
 
 
-@pytest.mark.skip(reason="blocked on T1.2 (Alejandro): query_component_graph "
-                         "is still a stub")
 def test_seeded_graph_query_returns_expected_node(graph_file):
     from tools.graph_query import query_component_graph
     out = query_component_graph(component="agentlib.core",
