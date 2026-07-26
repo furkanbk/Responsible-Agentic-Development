@@ -8,6 +8,11 @@ Project: **Responsible Agentic Development Framework (RADF)** — a multi-agent 
 keeps a persistent knowledge graph of a codebase so development sessions stop re-deriving
 architecture from scratch.
 
+> **Current homework: HW2.** HW1 is closed. HW2 adds scoped memory, three stores, a
+> planner/executor pair, and a monitor. Where a rule below was written for HW1 and HW2 changes
+> it, the change is stated inline — §4 and §7 in particular. If something here contradicts
+> `docs/TODO.md`, TODO.md wins for *task scope* and this file wins for *how to work*.
+
 ---
 
 ## 0. Read before you write
@@ -87,8 +92,10 @@ HW1 is deliberately framework-free. The point is to understand the loop, not to 
 **Not allowed for HW1:**
 - LangChain, LangGraph, LlamaIndex, CrewAI, AutoGen, PydanticAI, Haystack, or any other
   agent/LLM orchestration framework
-- vector databases, embedding services, graph databases (Neo4j, LadybugDB/Kuzu, etc.) — the
-  knowledge graph is a JSON file this round
+- vector databases, embedding services, graph databases (Neo4j, LadybugDB/Kuzu, etc.)
+  — **HW2 note:** the *structural* graph is still a JSON file, deliberately (decision #21).
+  The authored overlay is now `sqlite3`, which is stdlib and adds no dependency. Retrieval is
+  still keyword + recency: no embeddings, no vector store.
 - external code-indexing tools — **GitNexus**, CodeGraph, or similar. GitNexus is the chosen
   structural indexer for a *later* homework and its migration is already designed in
   `ARCHITECTURE.md` §6.1; wiring it in now removes the component HW1 is graded on. Do not
@@ -149,3 +156,32 @@ Do not:
 
 If a task looks like it needs work beyond its boundary, say so and stop. Flagging a blocker
 is a correct outcome; quietly widening scope is not.
+
+### 7.1 HW2 amendment — what is now in scope
+
+**The multi-agent prohibition above is lifted for HW2**, and only for what HW2 names:
+
+- **In scope now:** a **planner** and an **executor** coordinating through the
+  `AgentResult` envelope, a plain-Python orchestrator, and a **monitor** that grades run logs
+  out of band. See `docs/TODO.md` Phases 6-8.
+- **Still out of scope:** the Discussion Agent, the ELI5/Mermaid agent, retrieval over the
+  graph, and any general orchestration framework. Two agents plus a judge is the whole of it —
+  a third agent needs a reason in `ARCHITECTURE.md`, not just an opportunity.
+
+The orchestrator is deliberately **not** an agent (decision #29). If you find yourself wanting
+an LLM to route between the two agents, that is a sign the envelope is missing a field.
+
+### 7.2 HW2 invariants — do not undo these
+
+They cost more than they look like they should, and each one is a decision record:
+
+- **Identity and write scope are ambient, never tool arguments** (#25). Do not add an
+  `author_id` or `impacted` parameter to a tool "for testability" — use `session_scope` /
+  `impact_scope`. An empty impact set denies every write; it does not mean unrestricted.
+- **Visibility is filtered in the query, not the prompt** (#24). Never fetch all rows and
+  instruct the model to ignore some.
+- **Retrieved decisions and memory go in `input[]` as quoted data, never in `instructions`**
+  (#26). Putting stored text into the system prompt is the memory-injection attack.
+- **Everything in the overlay keys on `resolve_uid(...)`** (#22), never a raw component string.
+- **`store/` is off limits to tools.** It is the agent's own memory and the decisions
+  constraining it; `read_source_file` and `apply_change` both refuse it.
