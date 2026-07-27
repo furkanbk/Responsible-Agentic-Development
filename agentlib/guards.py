@@ -30,7 +30,12 @@ from typing import Any
 # tool in HW1 (tools/graph_write.py, owned by Dias). If a reversibility-first
 # variant lands (soft-delete + restore, Part B B5 / TODO T2.6), its soft-delete
 # is removed from this set — that is the whole point of engineering the gate away.
-GATED: set[str] = {"prune_graph_node"}
+#
+# HW2 (T7.1, Alejandro): `apply_change` overwrites a file's contents wholesale,
+# which is irreversible in the same sense, so it joins the set beside
+# `prune_graph_node`. The point of this line is that the riskiest new capability
+# needs NO new safety mechanism — HW1's gate carries over unchanged.
+GATED: set[str] = {"prune_graph_node", "apply_change"}
 
 
 def requires_approval(name: str) -> bool:

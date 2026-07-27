@@ -4,7 +4,8 @@
 > component updates it. Sections marked `<!-- OWNER: ... -->` are filled in by that owner as
 > their work lands. Keep entries terse; this is read instead of the code.
 >
-> Last updated: 2026-07-26 — HW2 state layers, overlay, and the two-agent pipeline (Berat)
+> Last updated: 2026-07-26 — HW2 state layers, overlay, and the two-agent pipeline (Berat);
+> planner + gated `apply_change` implemented, branch `hw2/alejandro/planner-and-write` (Alejandro)
 
 ---
 
@@ -320,6 +321,9 @@ component moved or was removed, so the decision may be stale and should be surfa
 | 31 | 2026-07-26 | agents.executor | The executor's toolset is narrow **by construction**, and its boundary lives in `agents/executor_brief.md` | one registry for all agents, with prose telling the executor what not to use | A tool absent from the registry cannot be called by a model that has been argued into wanting it. Keeping the brief in a file means a human can amend the delegation in seconds without touching Python — the same reason operating rules are a file. |
 | 32 | 2026-07-26 | agentlib.runlog | The run log records the **assembled instructions**, not just the actions | logging tool calls and the final answer only | "The agent ignored a rule" and "the rule was never in its context" produce identical traces and have opposite fixes — one is a model failure, the other is a bug in the assembler. The judge runs after the fact and cannot re-run anything, so if the distinction is not in the log it cannot be made at all. |
 | 33 | 2026-07-26 | tests | `tests/conftest.py` redirects all four stores by autouse fixture; `smoke_hw1.py` renamed to `test_smoke_hw1.py` | per-test redirection as in HW1 | Three stores is past the point where "remember to redirect it" scales — one forgetful test writes into the developer's real overlay and nothing fails to say so. The rename fixed a suite that pytest's `test_*.py` discovery had never collected: it only ever ran when named explicitly, so its 23 tests were silently absent from `pytest tests/`. |
+| 34 | 2026-07-26 | agents.planner | The impact walk is **code-owned and capped** — the model is called once (seed + steps from free-form text), then pure Python does the transitive `imported_by` BFS to `max_hops` | letting the model call `query_component_graph` in a loop to discover impact | Same rule as stopping conditions (§5): the walk is the agent's answer to "what breaks", so it must be the code's decision, not talked out of the cap by context. An uncapped walk on a real repo reaches everything (15 modules at 2 hops from `tools.decisions`) and permits every write. `max_hops` is recorded in the plan as `impact_max_hops`, so the cap is visible in the trace. |
+| 35 | 2026-07-26 | agents.planner | A **conflict** = two live decisions on one `symbol_uid` where one's `decision` is the other's `rejected` alternative → `open_questions` (stops the run) | letting the model judge whether decisions contradict; or ignoring conflicts | `open_questions == []` authorises the executor to act without a human, so it must be earned by a check the code can make and a test can pin. Semantic contradiction needs the model and is not reproducible; the `decision`-vs-`rejected` join is exact, deterministic, and seeded straight into the overlay in a test. |
+| 36 | 2026-07-26 | tools.apply_change | Both confinements — path (repo root + `DENYLIST`, resolve-then-compare) and impact-set (against the ambient `current_impact_set()`) — live **in the tool**, never in the prompt | trusting the plan's paths, or gating on the human approval alone | The gate answers "should this irreversible thing happen"; it cannot bound *what* the write touches, because by the time a human reads the prompt they are approving a path the model chose. The impact set is ambient for the same reason `author_id` is (#25): a parameter would let the model authorise its own writes. Empty impact set = deny all. A refused write leaves the file byte-identical (check first, write second). |
 
 ---
 
@@ -440,10 +444,36 @@ that is the contradiction the monitor is meant to find (T7.4), not something to 
 | `agentlib/context.py` | context assembly, push/pull split, quoting of untrusted text | `overlay`, `agentlib.session` |
 | `agentlib/runlog.py` | the run record the monitor grades | — |
 | `agents/envelope.py` | `AgentResult`, the plan dict, `validate_plan` — the frozen inter-agent contract | — |
-| `agents/planner.py` | impact set + constraints → a plan *(stub; Alejandro, T6.2)* | `agents.envelope`, graph + decision tools |
+| `agents/planner.py` | transitive-`imported_by` impact set (capped) + constraints → a plan; one model call for the seed, the walk is pure Python *(done; Alejandro, T6.2)* | `agents.envelope`, graph + decision tools |
 | `agents/executor.py` | carries out a plan; narrow toolset; brief pushed every run | `agents.envelope`, `agentlib.context` |
 | `orchestrator.py` | plain-Python routing on envelope fields; owns the single run record | both agents, `overlay.db` |
 | `tools/read_source.py` | confined file read for the executor | `tools.apply_change` (denylist) |
-| `tools/apply_change.py` | the gated file write *(stub; Alejandro, T7.1)* | `agentlib.session` |
+| `tools/apply_change.py` | the gated file write; path + impact-set confinement, before/after hash *(done; Alejandro, T7.1)* | `agentlib.session`, `overlay.uid` |
 | `monitor/judge.py` | LLM-as-judge over run logs *(not started; Dias, T7.3)* | `agentlib.runlog` |
 | `inspect_store.py` | read-only CLI over all four stores; `trace <run_id>` renders the cross-store causal chain | `overlay`, `agentlib.runlog` |
+
+**Contract — `agents/planner.py` (Alejandro, T6.2).**
+```
+run_planner(request, *, component_hint="", max_hops=2, model=None,
+            max_steps=8, verbose=True, run_log=None) -> AgentResult
+  ok          plan dict, open_questions == []      (executor may act alone)
+  needs_input component absent from the graph, or two decisions conflict
+  failed      graph unreadable, or the model's seed/step proposal is unusable
+```
+The plan carries the frozen keys plus a non-frozen `impact_max_hops`, so the
+depth cap is visible in the plan, the scratch and the run log. The model is
+called exactly once (seed + steps from free-form text); the impact walk and its
+cap are pure Python (decision #34), and conflicting decisions become open
+questions (decision #35). `component_hint` skips the model entirely.
+
+**Contract — `tools/apply_change.py` (Alejandro, T7.1).**
+```
+apply_change(path, new_content, intent="edit"|"create") -> dict
+  ok    {"path","written":true,"intent","before_sha","after_sha","bytes"}
+  err   path_outside_scope | outside_impact_set | no_plan | file_missing |
+        file_exists | invalid_args   (RETURNED, never raised)
+```
+Path confinement (resolve-then-compare + `DENYLIST`) and impact-set confinement
+(against the ambient `current_impact_set()`, never a parameter) are both in the
+tool, not the prompt (decision #36). A refused write leaves the file
+byte-identical. In `GATED`, so an approved write still passes the human gate.
