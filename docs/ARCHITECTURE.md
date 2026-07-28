@@ -324,6 +324,10 @@ component moved or was removed, so the decision may be stale and should be surfa
 | 34 | 2026-07-26 | agents.planner | The impact walk is **code-owned and capped** — the model is called once (seed + steps from free-form text), then pure Python does the transitive `imported_by` BFS to `max_hops` | letting the model call `query_component_graph` in a loop to discover impact | Same rule as stopping conditions (§5): the walk is the agent's answer to "what breaks", so it must be the code's decision, not talked out of the cap by context. An uncapped walk on a real repo reaches everything (15 modules at 2 hops from `tools.decisions`) and permits every write. `max_hops` is recorded in the plan as `impact_max_hops`, so the cap is visible in the trace. |
 | 35 | 2026-07-26 | agents.planner | A **conflict** = two live decisions on one `symbol_uid` where one's `decision` is the other's `rejected` alternative → `open_questions` (stops the run) | letting the model judge whether decisions contradict; or ignoring conflicts | `open_questions == []` authorises the executor to act without a human, so it must be earned by a check the code can make and a test can pin. Semantic contradiction needs the model and is not reproducible; the `decision`-vs-`rejected` join is exact, deterministic, and seeded straight into the overlay in a test. |
 | 36 | 2026-07-26 | tools.apply_change | Both confinements — path (repo root + `DENYLIST`, resolve-then-compare) and impact-set (against the ambient `current_impact_set()`) — live **in the tool**, never in the prompt | trusting the plan's paths, or gating on the human approval alone | The gate answers "should this irreversible thing happen"; it cannot bound *what* the write touches, because by the time a human reads the prompt they are approving a path the model chose. The impact set is ambient for the same reason `author_id` is (#25): a parameter would let the model authorise its own writes. Empty impact set = deny all. A refused write leaves the file byte-identical (check first, write second). |
+| 37 | 2026-07-27 | monitor.judge | The judge grades on **named values** (`strictly_adheres`/`minor`/`serious`, `grounded`/`partial`/`ungrounded`), never a 1–10 score | a numeric score, or a single pass/fail | A number hides the reason and invites averaging away a serious breach with three clean runs. A named value forces the line — "minor leaves the outcome unchanged; serious crossed a boundary" — to be drawn in `rubric.md`, editable by an admin, not buried in the model's head. |
+| 38 | 2026-07-27 | monitor.judge | The model **proposes** violations; the **code decides** the verdict. A violation with no `expected`+`observed` is dropped before reporting; the final adherence label is computed from the survivors, not read from the model's self-report | trusting the judge's own verdict and severity | The judge is itself an LLM and hallucinates. An unverifiable verdict is indistinguishable from a hallucination (T7.3a), so it is discarded, not trusted — the same principle as HW1's guards: never take the model's word, require a receipt. Grounding downgrades are trusted only when they carry a rationale, else treated as grounded. |
+| 39 | 2026-07-27 | monitor.judge | "The agent ignored a rule" and "the rule was never in its context" are **split by the code** using `assembled.instructions`: a cited rule absent from the pushed prompt is an **assembler gap**, never a model adherence violation (T7.3c) | reporting every unmet rule as a model failure | The two have different fixes — one is the model, the other is the context assembler. Conflating them sends the fix to the wrong owner. `rule_in_context` checks the rule id (and a quoted snippet) against the full pushed prompt; only in-context violations count toward `prompt_adherence`, gaps are surfaced separately. This is why the run log carries `assembled.instructions` in full (runlog.py). |
+| 40 | 2026-07-27 | monitor.judge | The monitor is **read-only and isolated**: a separate job on its own clock, over `runs.jsonl`, with no tools, no live store, and no way to affect the run it grades | a verification step inside `run_agent`, or a judge with store access | A judge that can act can be steered by the same injection that steers the agent (R4), and a judge inside the loop cannot grade the loop's own stopping decision. Reading only the frozen log record keeps the grade independent and the run replayable. |
 
 ---
 
@@ -449,7 +453,8 @@ that is the contradiction the monitor is meant to find (T7.4), not something to 
 | `orchestrator.py` | plain-Python routing on envelope fields; owns the single run record | both agents, `overlay.db` |
 | `tools/read_source.py` | confined file read for the executor | `tools.apply_change` (denylist) |
 | `tools/apply_change.py` | the gated file write; path + impact-set confinement, before/after hash *(done; Alejandro, T7.1)* | `agentlib.session`, `overlay.uid` |
-| `monitor/judge.py` | LLM-as-judge over run logs *(not started; Dias, T7.3)* | `agentlib.runlog` |
+| `monitor/judge.py` | LLM-as-judge over run logs — two named axes; code drops unbacked verdicts and splits ignored-rule from never-assembled *(done; Dias, T7.3)* | `agentlib.runlog`, `agentlib.core` |
+| `monitor/rubric.md` | hand-editable rubric pushed to the judge; where the minor/serious line falls *(done; Dias, T7.3b)* | — |
 | `inspect_store.py` | read-only CLI over all four stores; `trace <run_id>` renders the cross-store causal chain | `overlay`, `agentlib.runlog` |
 
 **Contract — `agents/planner.py` (Alejandro, T6.2).**
@@ -465,6 +470,25 @@ depth cap is visible in the plan, the scratch and the run log. The model is
 called exactly once (seed + steps from free-form text); the impact walk and its
 cap are pure Python (decision #34), and conflicting decisions become open
 questions (decision #35). `component_hint` skips the model entirely.
+
+**Contract — `monitor/judge.py` (Dias, T7.3).**
+```
+judge_run(run, *, model=STRONG, rubric=None) -> Verdict
+  Verdict{run_id, prompt_adherence, grounding, violations[], assembler_gaps[],
+          dropped[], gradeable, notes, model}
+  prompt_adherence  strictly_adheres | minor_violation | serious_violation  (or "ungraded")
+  grounding         grounded | partially_grounded | ungrounded              (or "ungraded")
+```
+The model proposes; the code decides (decisions #37–#40). `violations` are
+in-context and rationale-backed only; a cited rule absent from
+`assembled.instructions` lands in `assembler_gaps`; a rationale-less accusation
+lands in `dropped`. Unparseable/truncated judge output → `gradeable=False`, never
+a guessed grade. `judge_runs` / `report` / `problems` grade and summarise the
+whole log; `python -m monitor.judge` is the "separate job on its own clock".
+Grades from the frozen run-log record (§7.4, `agentlib/runlog.py`) only — no
+tools, no store. `rubric.md` is the hand-editable line-drawing, pushed to the
+judge; `demos/demo_monitor_finding.py` seeds the R5-vs-personal-rule contradiction
+(T7.4) and shows the monitor report it with expected-vs-observed.
 
 **Contract — `tools/apply_change.py` (Alejandro, T7.1).**
 ```
