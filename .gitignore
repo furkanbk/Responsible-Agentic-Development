@@ -7,6 +7,7 @@
 store/*.json
 store/*.db
 store/*.db-journal
+store/*.bak-*
 store/runs/
 
 # Notebook demo artifacts from the guidance scaffold
