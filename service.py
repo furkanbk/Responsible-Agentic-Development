@@ -243,12 +243,22 @@ def make_handler(send: Callable[[str, str], None], gate: ChannelGate, *,
                 send(event.thread_key, HELP_TEXT)
                 return
             if text == "/whoami":
+                # The external id is echoed because it is the one thing an
+                # operator cannot look up from outside: it is what goes in
+                # RADF_CHANNEL_USERS to map this person to a RADF user. Safe to
+                # show — it is the sender's own id, told back to the sender.
                 send(event.thread_key,
                      f"You resolve to: {identity}\n"
+                     f"  telegram id : {identity.external_id or '(none)'}\n"
+                     f"  chat id     : {event.thread_key}\n"
                      f"  known to me : {identity.known}\n"
                      f"  may write   : {identity.can_write}\n"
                      f"  admin       : {identity.is_admin}\n"
-                     "Unrecognised senders read team-visible records only.")
+                     + ("Unrecognised senders read team-visible records only. To be "
+                        f"recognised, add  telegram:{identity.external_id}=<your-name>  "
+                        "to RADF_CHANNEL_USERS in .env and restart me."
+                        if not identity.known else
+                        "You are on the allowlist."))
                 return
 
             silence = check_silence(event, identity)
