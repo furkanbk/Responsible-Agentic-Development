@@ -1,28 +1,38 @@
-# TODO.md — HW1 (complete) + HW2 (current)
+# TODO.md — HW1 (complete) + HW2 (complete) + HW3 (current)
 
 **Read this file before any implementation.** If a task is not here, it is not in scope.
 Every file has exactly one owner. Stubs are contracts — do not fill in a stub you do not own.
 
-Branch: `hw1/<owner>/<short-task>` · `hw2/<owner>/<short-task>` · PR into `main` · no direct pushes.
+Branch: `hw1/<owner>/<short-task>` · `hw2/<owner>/<short-task>` · `hw3/<owner>/<short-task>` ·
+PR into `main` · no direct pushes.
 
-> **Current phase: HW2.** HW1 (Phases 0–3) is closed; its boxes below are historical record.
-> Phases 4, 4b and 5 are **built and merged** (Berat) — the overlay, scoped memory, the session
-> key, operating rules, context assembly and run logging all exist and are under test.
+> **Current phase: HW3** (Phases 9–11). HW1 (Phases 0–3) and HW2 (Phases 4–8) are closed; their
+> boxes below are historical record. HW3 gives the system a real surface: a Telegram bot and a
+> GitHub webhook, two non-message triggers, a queue, a recorded silence branch, and a privileged
+> admin path.
+>
+> **Stale boxes, knowingly left alone.** T7.3–T7.5 are still `[ ]` below but the code is
+> committed and merged (`d4e0280`, `7c84a0b`, `37a983b`). Dias ticks them in his HW3 branch;
+> nobody else edits them. T8.3 (live runs) is the one genuinely open HW2 item and it is now
+> easier to close from the channel than from the CLI — see T9.6.
 
 ## Start here
 
 | You are | Your next task | Blocked by | Read first |
 |---|---|---|---|
-| **Berat** | *(all assigned HW2 work done — reviewing PRs, then T8.3 live runs with Alejandro)* | T7.1 | this file, then §Contracts |
-| **Alejandro** | *(T6.2 planner + T7.1 apply_change done, branch `hw2/alejandro/planner-and-write` — then T8.3 live runs with Berat)* | **nothing** | §Contracts (plan dict), `agents/envelope.py` |
-| **Dias** | **T7.5** the log fixture, then **T7.3** `monitor/judge.py` | **nothing** | §Contracts (run-log record), `agentlib/runlog.py` |
+| **Berat** | **T9.0** the `channel/` stubs — merge it alone, it is what unblocks the other two | **nothing** | this file, then §Contracts (HW3) |
+| **Alejandro** | **T10.1** `triggers/webhook.py` | T9.0 (stubs only, not T9.1–T9.8) | §Contracts (`InboundEvent`), `tools/decisions.py::verify_graph_integrity` (read-only) |
+| **Dias** | **T11.1** `triggers/heartbeat.py`, then **T11.2** the silence policy | T9.0 stubs; T11.2 also needs T9.4 | §Contracts (`InboundEvent`, `SilenceDecision`), `monitor/judge.py` |
 
-The three tracks are deliberately independent. Alejandro's planner and Dias's monitor never
-import each other, and neither needs the executor to exist. If you find yourself waiting on
-someone, say so — that means a contract is missing and we fix it rather than serialise.
+**HW3 serialises exactly once, at the start.** Phase 9 is the foundation and is entirely Berat's,
+so its first task is stubs-only on purpose: real dataclasses, real signatures, real docstrings,
+`NotImplementedError` bodies — the same move that unblocked everyone in T0.8 and T6.1. Once T9.0
+merges, Phases 10 and 11 run in parallel with the rest of Phase 9 and with each other. They share
+no file.
 
-Nobody edits `agentlib/context.py`, `overlay/*`, or `tools/decisions.py` in HW2 without asking:
-they are load-bearing for all three tracks and are already under test.
+Nobody edits `agentlib/context.py`, `overlay/*` (beyond T9.4, Berat's own), or `tools/decisions.py`
+in HW3 without asking: they are load-bearing for all three tracks and are already under test.
+`monitor/judge.py` stays read-only — the heartbeat drives it from outside (T11.1).
 
 ---
 
@@ -67,8 +77,43 @@ they are load-bearing for all three tracks and are already under test.
 | **Monitor tests + fixtures** | `tests/test_monitor.py`, `tests/fixtures/runs_*.jsonl` | **Dias Sarkytbaev** | |
 | **Seeded contradiction + finding** | `rules/`, `demos/demo_monitor_finding.py` | **Dias Sarkytbaev** | |
 
-**Why this split.** Alejandro owns the graph read path from HW1, and both his HW2 pieces consume
-it: the planner turns a request into an impact set, and `apply_change` enforces that impact set.
+### HW3 (new surface)
+
+| Area | Files | Owner | Phase |
+|---|---|---|---|
+| Channel contracts (stubs) | `channel/base.py`, `channel/silence.py` (signature only), `triggers/__init__.py` | **Berat Furkan Kocak** | 9 — **blocking** |
+| Telegram client | `channel/telegram.py` | **Berat Furkan Kocak** | 9 |
+| Identity bridge + allowlists | `channel/identity.py` | **Berat Furkan Kocak** | 9 |
+| Queue + worker | `channel/queue.py` | **Berat Furkan Kocak** | 9 |
+| Silences store | `overlay/db.py`, `inspect_store.py` | **Berat Furkan Kocak** | 9 |
+| Async approval gate | `agentlib/approval.py` | **Berat Furkan Kocak** | 9 |
+| Service entry point | `service.py` | **Berat Furkan Kocak** | 9 |
+| Channel tests | `tests/test_channel.py` | **Berat Furkan Kocak** | 9 |
+| Repo docs | `docs/ARCHITECTURE.md`, `docs/TODO.md`, `README.md` | **Berat Furkan Kocak** | 9 |
+| **GitHub webhook receiver** | `triggers/webhook.py` | **Alejandro Ramírez Trueba** | 10 |
+| **Orphan watch** | `triggers/orphan_watch.py` | **Alejandro Ramírez Trueba** | 10 |
+| **Webhook tests + payload fixtures** | `tests/test_webhook.py`, `tests/fixtures/gh_*.json` | **Alejandro Ramírez Trueba** | 10 |
+| **Monitor heartbeat** | `triggers/heartbeat.py` | **Dias Sarkytbaev** | 11 |
+| **Silence policy (leak guard)** | `channel/silence.py` (body) | **Dias Sarkytbaev** | 11 |
+| **Admin subagent + boundary** | `agents/admin.py`, `rules/ADMIN_BOUNDARY.md` | **Dias Sarkytbaev** | 11 |
+| **Silence / admin tests** | `tests/test_silence.py`, `tests/test_admin.py` | **Dias Sarkytbaev** | 11 |
+
+**Why this split.** It is the HW2 split projected onto the new surface. Alejandro owns the
+structural read path, and the webhook is that path with an external clock: a push arrives, the
+repo is re-scanned, and decisions whose `symbol_uid` stopped resolving get surfaced. Dias owns
+safety and the monitor, and all three of his pieces are safety one level up — the judge's real
+clock, the condition under which the agent must say nothing, and the boundary between the
+ordinary and the privileged path. Berat owns the plumbing everything sits on, which is why it
+goes first.
+
+**`channel/silence.py` is the one file two people touch, and only in the T0.8 sense:** Berat
+writes the `SilenceDecision` dataclass and the `evaluate_silence(...)` signature in T9.0 and
+stops. Dias writes the body in T11.2. Per CLAUDE.md §1 the stub is a contract — the signature,
+docstring and return shape do not change without both of them agreeing.
+
+**Why the HW2 split, for reference.** Alejandro owns the graph read path from HW1, and both his
+HW2 pieces consume it: the planner turns a request into an impact set, and `apply_change`
+enforces that impact set.
 Dias owns safety and tests from HW1, and the monitor is the safety net one level up — it grades
 runs from outside the loop. Neither has to wait for the other, or for Berat (see the frozen
 contracts below).
@@ -137,6 +182,69 @@ executor — a plan dict is a literal in a test.
 
 ---
 
+## Contracts frozen for HW3
+
+Same rule as above: these ship in **T9.0** as stubs, before any implementation, so Phases 10 and
+11 are never blocked on Phase 9 finishing. Build against them.
+
+**4. `InboundEvent`** — every trigger, whatever its source, emits this one shape. The queue and
+the worker know nothing else about where an event came from.
+
+```python
+@dataclass(frozen=True)
+class InboundEvent:
+    source:           Literal["telegram", "github", "heartbeat"]
+    external_user_id: str | None   # None for github/heartbeat — no human asked
+    thread_key:       str          # where a reply goes; also the queue's ordering key
+    text:             str          # untrusted, always
+    payload:          dict         # source-specific, untouched
+    ts:               float
+    dedupe_key:       str | None   # e.g. "push:main" — set means coalescable
+```
+
+**5. `SilenceDecision`** — the recorded outcome when the agent deliberately says nothing.
+
+```python
+@dataclass(frozen=True)
+class SilenceDecision:
+    silent:      bool
+    reason_code: str   # heartbeat_clean | private_decision_leak | no_decisions_touched | ...
+    evidence:    str   # what was checked; never the private content itself
+    visibility:  str   # 'team' or 'user:<id>' — who may later read the reason
+```
+
+```python
+def evaluate_silence(event: InboundEvent, session: SessionKey,
+                     candidates: list[dict]) -> SilenceDecision: ...
+```
+
+`evidence` must never carry the text that triggered the silence. A leak guard that writes the
+private decision into its own audit row has moved the leak, not closed it.
+
+**6. The `silences` table** — `overlay/db.py`, landed in T9.4:
+
+```sql
+CREATE TABLE IF NOT EXISTS silences (
+  silence_id  TEXT PRIMARY KEY,
+  run_id      TEXT,
+  trigger     TEXT NOT NULL,      -- telegram | github | heartbeat
+  reason_code TEXT NOT NULL,
+  evidence    TEXT NOT NULL,
+  visibility  TEXT NOT NULL,      -- 'team' or 'user:<id>'
+  ts          TEXT NOT NULL
+)
+```
+
+Read it with `query_silences(conn, user_id, limit)`, which filters through the existing
+`visible_to(user_id)` SQL fragment — **in the query, never after** (decision #24).
+
+**Working without the other pieces.** Alejandro does not need a running Telegram bot: construct
+an `InboundEvent` literal and assert what the webhook produced. Dias does not need the queue —
+`evaluate_silence` is a pure function of its three arguments, and the heartbeat can be driven by
+calling it directly with a fixture `runs.jsonl`.
+
+---
+
 ## Homework requirement → owner (grading traceability)
 
 ### HW1
@@ -170,6 +278,19 @@ executor — a plan dict is a literal in a test.
 | Irreversible action gated (the file write) | `tools/apply_change.py` + `GATED` | T7.1 | **Alejandro** |
 | Monitor on its own clock, named verdicts + rationale | `monitor/judge.py`, `monitor/rubric.md` | T7.3 | **Dias** |
 | Monitor reports a real problem | seeded rule contradiction | T7.4 | **Dias** |
+
+### HW3
+
+| HW3 requirement | Where it is satisfied | Task | Owner |
+|---|---|---|---|
+| A real channel — agent reads and answers there | `channel/telegram.py` (interactive) | T9.1 | Berat |
+| …two or more sources | + `triggers/webhook.py` (GitHub events) | T10.1 | **Alejandro** |
+| A disposable identity, never the primary account | fresh bot token in `.env`; `BOT_AUTHOR_ID = "bot:radf"`; default impact set `()` denies every write per #25 | T9.2 | Berat |
+| Trigger 1 — external event / webhook (interactive mode) | `triggers/webhook.py` → `triggers/orphan_watch.py` | T10.1, T10.2 | **Alejandro** |
+| Trigger 2 — schedule / heartbeat / threshold (background mode) | `triggers/heartbeat.py` — unjudged-run threshold inside an interval loop | T11.1 | **Dias** |
+| A silence branch + a written record of the decision | `channel/silence.py::evaluate_silence` → `silences` table; primary case is the private-decision leak guard | T11.2 (T9.4 store) | **Dias** (Berat, store) |
+| A queue — what happens to input arriving mid-turn | `channel/queue.py` — single worker, FIFO, per-path policy | T9.3 | Berat |
+| An admin subagent + a written boundary | `agents/admin.py` + `rules/ADMIN_BOUNDARY.md` | T11.3 | **Dias** |
 
 ---
 
@@ -505,6 +626,239 @@ the guards you owned in HW1.
 
 ---
 
+# HW3
+
+A real channel, a disposable identity, two triggers that are not a user message, a silence branch
+with a recorded reason, a queue, and a privileged admin path.
+
+Three HW2 properties stop being test fixtures here. Visibility filtering (#24) has only ever been
+exercised against fabricated `user_id`s in `demos/demo_private.py`; in a shared Telegram thread it
+separates real humans. Ambient identity (#25) has only ever been set by a CLI flag; now a trigger
+establishes it. And the orphaned-decision signal that CLAUDE.md §6 calls *"exactly the signal
+worth having"* has never had anything watching for it — T10.2 is that watcher.
+
+**No new dependencies.** CLAUDE.md §4 still binds and HW3 does not need relief from it. Telegram
+is `urllib.request` long-polling `getUpdates`; the webhook receiver is `http.server`; signature
+verification is `hmac` + `hashlib`; the worker is `threading` + `collections.deque`.
+`requirements.txt` stays `openai`, `python-dotenv`, `pytest`.
+
+**One HW2 contract changes, deliberately.** The approval gate. `main.py`'s blocking `input()`
+cannot survive a queued worker — it would deadlock the queue on every gated write. It becomes an
+asynchronous in-channel confirmation for the channel path only; the CLI gate is untouched, so
+every HW1/HW2 test keeps passing. Recorded as decision #41, not filed as a refactor.
+
+---
+
+## Phase 9 — Channel foundation (Berat) — **blocking, do first**
+
+### T9.0 — Contracts first. Merge this alone, before anything else.
+
+Stubs only: dataclasses fully written, functions raising `NotImplementedError` with real
+docstrings. Same move as T0.8 and T6.1 — it is the whole reason HW3 serialises only once.
+
+- [ ] **T9.0a** `channel/base.py` — `InboundEvent`, `OutboundReply{thread_key, text, silent}`,
+      and `class Channel(Protocol)` with `poll() -> Iterator[InboundEvent]` and
+      `send(reply) -> None`. Shapes are frozen above.
+- [ ] **T9.0b** `channel/silence.py` — `SilenceDecision` **and the `evaluate_silence` signature
+      only**. The body is Dias's T11.2. Write the docstring properly: it is the contract.
+- [ ] **T9.0c** `triggers/__init__.py` — re-export `InboundEvent` so Phases 10 and 11 import one
+      name. No trigger registry unless one is earned; a trigger constructing an `InboundEvent`
+      directly is simpler and there are only three of them.
+
+**Blocks:** everything in Phases 10 and 11. Nothing blocks it.
+
+### T9.1 — Telegram client
+
+- [ ] `channel/telegram.py` — `urllib.request` long-poll on `getUpdates` with persisted `offset`,
+      `sendMessage` to reply. Token from `TELEGRAM_BOT_TOKEN` (add to `.env.example`; the real
+      one is never committed — CLAUDE.md §2).
+- [ ] Network failure is a **branch, not a crash** — back off and continue, the same discipline as
+      §5's "a tool failure gets its own branch." A channel that dies on one 502 is not a channel.
+- [ ] Every field of an update is untrusted input, including the display name. It reaches
+      `input[]` as quoted data, never `instructions` (#26).
+
+### T9.2 — Identity bridge
+
+- [ ] `channel/identity.py` — maps `external_user_id` → `SessionKey(user_id, thread_id)` from an
+      allowlist in `.env`. An **unmapped** id gets a low-trust anonymous identity that sees
+      team-visible rows only, which is what `current_user() is None` already yields — no new
+      code path, just a named one.
+- [ ] `BOT_AUTHOR_ID = "bot:radf"`. Anything the bot authors is attributable to the bot, never to
+      the person who asked for it. This is the half of "disposable identity" that lives in the
+      store rather than in the token.
+- [ ] The admin allowlist lives here too; Dias's T11.3 consumes it. This module performs no
+      writes and calls no tools — it decides who someone is, nothing more.
+
+### T9.3 — Queue and worker
+
+- [ ] `channel/queue.py` — one worker thread, `collections.deque` FIFO, policy **per path**:
+      **webhook → coalesce** (events sharing a `dedupe_key` collapse to the newest waiting one);
+      **human → queue**, except while the in-flight turn is parked on a gated approval, where the
+      new message is **rejected with a reason** ("waiting on approval for `apply_change` on X");
+      **heartbeat → drop** if one is already queued.
+- [ ] Write down why it is one worker: `session_scope` and `impact_scope` are `contextvars`, so
+      two concurrent turns for different users would race ambient identity — and ambient identity
+      is the mechanism that keeps A's private rows away from B (#25, T4.5). A worker pool would
+      trade a correctness property for throughput this system does not need.
+
+### T9.4 — Silences store
+
+- [ ] `overlay/db.py` — the `silences` table (DDL frozen above), `record_silence(...)`, and
+      `query_silences(conn, user_id, limit)` filtered through the existing `visible_to(user_id)`
+      fragment. **In the query, never after** (#24).
+- [ ] `inspect_store.py` — a `silences` subcommand beside `decisions|memory|runs|trace`.
+      "Silence with a reason recorded is a correct outcome" only holds if the reason is
+      retrievable; an unqueryable log is a deleted one with extra steps.
+
+### T9.5 — Asynchronous approval gate
+
+- [ ] `agentlib/approval.py` — posts the proposed `apply_change` (path, `before_sha`, size delta,
+      intent) into the channel and parks the run until the **requesting** user answers. Nobody
+      else's `y` counts.
+- [ ] **Timeout is a `declined`, not an approval.** An unanswered gate that eventually writes is
+      not a gate.
+- [ ] Channel path only. `main.py`'s `approve_via_input` and `GATED` in `agentlib/guards.py` are
+      **unchanged**, so the whole HW1/HW2 suite keeps passing untouched.
+
+### T9.6 — Service entry point
+
+- [ ] `service.py` — poll → queue → worker → `run_change_request(...)` or the read-only answer
+      path, all inside `session_scope(...)` established by T9.2. `argparse` main matching the four
+      existing entry points; graceful shutdown; the run log flushes on **every** exit path,
+      silence included.
+- [ ] A `--dry-run` mode driven by a scripted channel, so the queue is testable without a network.
+- [ ] This is also the cheapest way to finally close **T8.3**: both `apply_change` gate branches
+      are easier to demo in a chat thread than over stdin.
+
+### T9.7 — Docs
+
+- [ ] `docs/ARCHITECTURE.md` — component entries and contracts for `channel/`, `triggers/`,
+      `agentlib/approval.py`, `service.py`, and the `silences` table in §4.
+- [ ] Decision records **#41–#45**. Numbers are **reserved now** so three parallel branches do not
+      collide in one file — #46 is Alejandro's, #47–#48 are Dias's, and each owner writes their
+      own (the T8.4 rule).
+      **#41** the gate goes asynchronous and in-channel; timeout means declined. Rejected: keeping
+      `input()` and a synchronous worker — it deadlocks on every gated write.
+      **#42** one worker, because ambient identity is a `contextvar`. Rejected: a worker pool.
+      **#43** per-path queue policy rather than one uniform strategy — with the costs named:
+      coalescing loses per-commit granularity, rejection loses messages.
+      **#44** silence is a first-class recorded outcome, with its own table and its own visibility.
+      **#45** the bot has its own `author_id` and an empty default impact set, so read-only is
+      enforced by #25 rather than by prompt.
+
+### T9.8 — Tests
+
+- [ ] `tests/test_channel.py` — queue policies (coalesce, reject-while-gated, drop-duplicate
+      heartbeat, FIFO order); identity mapping including the unmapped-id path; silences round-trip
+      and **visibility filtering**; the async gate approving, declining, and timing out.
+- [ ] No API calls. Reuse the `scripted_call` pattern from `tests/test_smoke_hw1.py` and the
+      autouse `isolate_stores` fixture in `tests/conftest.py` — it already redirects all four
+      stores, so the new table is covered by `RADF_DB_PATH` for free.
+
+---
+
+## Phase 10 — GitHub webhook + orphan watch (Alejandro)
+
+The structural read path you have owned since HW1, now with an external clock. Touches no file in
+Phase 9 or 11.
+
+- [ ] **T10.1** `triggers/webhook.py` — `http.server.ThreadingHTTPServer`, one route. Verify
+      `X-Hub-Signature-256` with `hmac.compare_digest` against `GITHUB_WEBHOOK_SECRET`; an
+      unverified request is dropped and logged, never processed. Parse `push` / `pull_request`
+      into `InboundEvent(source="github", dedupe_key=f"push:{branch}")`.
+- [ ] **T10.1a** The receiver **only enqueues**. It never scans and never calls an agent inline —
+      otherwise an unauthenticated sender picks how much work the box does, and the HTTP thread
+      becomes a second place ambient identity could be set.
+- [ ] **T10.2** `triggers/orphan_watch.py` — on a github event: re-scan via
+      `scan_repository_structure`, then call the existing
+      `tools/decisions.py::verify_graph_integrity(scope="all")` — **read-only, do not edit that
+      file** (it is Berat's for HW2/HW3). Diff against the previous orphan set, persisted as a
+      watermark under `store/`.
+- [ ] **T10.2a** A newly-orphaned decision becomes one outbound message naming the decision, its
+      now-unresolvable `symbol_uid`, and the commit range. **Surfaced for review, never deleted**
+      (CLAUDE.md §6) — the component probably moved, which is the whole point of the signal.
+- [ ] **T10.3** Silence: a push touching only paths no decision references produces
+      `SilenceDecision(reason_code="no_decisions_touched", visibility="team")` via
+      `record_silence`. Secondary branch; the primary one is T11.2.
+- [ ] **T10.4** Decision **#46** — the webhook verifies then enqueues, and all work happens on the
+      worker. `tests/test_webhook.py`: signature accept and reject, `dedupe_key` shape,
+      orphan diff emits exactly one message for one orphan, irrelevant push records a silence and
+      sends nothing. Payload fixtures under `tests/fixtures/`.
+
+**Depends on:** T9.0 only. Not on the Telegram client, the queue, or anything of Dias's.
+
+---
+
+## Phase 11 — Heartbeat, silence policy, admin subagent (Dias)
+
+Safety one level up, which is the seat you have held since HW1. Touches no file in Phase 9 or 10
+except the `evaluate_silence` body, which is yours by contract.
+
+### T11.1 — The monitor's real clock
+
+- [ ] `triggers/heartbeat.py` — fires on a **threshold of unjudged records** inside an interval
+      loop. Implement the threshold: a count is less arbitrary than a timer, and decision #40
+      already says the monitor runs on its own clock — it just never had one.
+- [ ] Persist a watermark so `judge_runs` grades only records newer than the last pass.
+- [ ] Posts `problems(verdicts)` **only**. `monitor/judge.py` stays read-only and untouched beyond
+      whatever `_main()` needs to expose the watermark; if that turns into more than the entry
+      point, raise it as a contract change rather than widening the diff.
+- [ ] **Silence:** a clean pass says nothing and records `reason_code="heartbeat_clean"`. A bot
+      that posts "all clear" every six hours gets muted, and a muted bot is useless on the one
+      pass that finds something.
+
+### T11.2 — The primary silence branch: the private-decision leak guard
+
+- [ ] Implement `channel/silence.py::evaluate_silence(...)` against Berat's T9.0b stub. Signature,
+      docstring and return shape are **fixed** (CLAUDE.md §1).
+- [ ] The condition: a question arrives in a **shared** thread, and every decision relevant to the
+      component asked about is `visibility` private to a **different** user. The agent says
+      nothing.
+- [ ] It must also not say *"there is a private decision about that, ask X."* That reveals the
+      existence and the owner of a private record — the same leak wearing a hat. Existence is
+      content.
+- [ ] The reason is recorded with `visibility="user:<owner>"`, so the decision's owner can see
+      that someone asked and got nothing, and nobody else can. `evidence` carries the uid and the
+      asker, **never the decision text**.
+- [ ] Decided from the **query result** — `visible_to(asker)` returns nothing while an unfiltered
+      count returns rows — not by handing the model the rows and asking it to keep a secret
+      (#24). The guard is a comparison of two counts, not a judgement call.
+
+### T11.3 — The admin subagent
+
+- [ ] `agents/admin.py` + `rules/ADMIN_BOUNDARY.md`, following `agents/executor_brief.md`: the
+      boundary is a **written brief pushed every run**, not prose buried in code (#31).
+
+      | | Ordinary path | Admin subagent |
+      |---|---|---|
+      | Tools | `retrieve_decisions`, `query_component_graph`, `retrieve_memory` | + `append_decision_record`, `apply_change`, `prune_graph_node` (GATED), `promote_memory` |
+      | Visibility | `visible_to(their id)` | may read across scopes, to triage orphans |
+      | Write scope | `()` — denied by #25 | granted per run via `impact_scope` |
+      | Entry | any channel message | allowlisted admin id **and** an explicit in-channel confirmation |
+
+- [ ] The registry is narrow **by construction** — built from an explicit list, the way
+      `build_executor_registry()` is. Never `build_registry()` filtered at call time: a filter is
+      one bug away from being a full registry, a list is not.
+- [ ] Jobs worth having: re-point an orphaned decision's `symbol_uid` (pairs with T10.2), promote
+      a `proposed` inferred memory to `accepted` (#28 defines the promotion and nothing in the
+      system currently performs it), prune a dead graph node.
+
+### T11.4 — Docs + tests
+
+- [ ] Decisions **#47** (silence is decided from the filtered query result, and the guard covers
+      metadata — existence and ownership — as well as content) and **#48** (the admin registry is
+      narrow by construction, and gated on identity *plus* confirmation, because an allowlist
+      alone makes every admin message a privileged one).
+- [ ] `tests/test_silence.py` — the guard fires for a foreign private decision; does **not** fire
+      for a team decision, nor for the owner asking about their own; the recorded `evidence`
+      contains no decision text; a clean heartbeat sends nothing and writes one row.
+- [ ] `tests/test_admin.py` — a non-admin id cannot reach an admin tool; an admin id without
+      confirmation cannot either; the admin registry contains exactly the listed tools.
+
+**Depends on:** T9.0 stubs, and T9.4 for `record_silence`. Not on Alejandro.
+
+---
+
 ## Open questions / blockers
 
 - [x] ~~Exact Zen model ids for `CHEAP` / `STRONG` + per-token prices (incl. cached rate)~~ —
@@ -518,3 +872,18 @@ the guards you owned in HW1.
       T4.1 and record in §5.
 - [ ] Promotion threshold for inferred memory: is one repeat enough, or two? Start at one
       repeat (T5.6), revisit if the demos show noise.
+
+### HW3
+
+- [ ] Does the async gate (T9.5) time out in minutes or hours? A short timeout turns "the user
+      stepped away" into a decline they never made; a long one parks the single worker. Leaning
+      minutes, with the rejection message telling the next sender why. Decide in T9.3/T9.5.
+- [ ] Does the webhook run as a second process or a thread inside `service.py`? A thread is
+      simpler and shares the queue directly; a process survives a crash in the other half. Start
+      with a thread (T10.1), split it only if it actually falls over.
+- [ ] Should the heartbeat post its problem verdicts to the whole team thread, or only to the
+      `user_id` on the offending run? Team, probably — a monitor finding is not private — but it
+      can surface a run whose request text was another user's. Decide in T11.1; if it needs the
+      run's visibility, that is a T9.4 column, not a filter in the poster.
+- [ ] Does an admin action get its own run record, or ride the run that requested it? Own record,
+      leaning — an admin path with no separate trace is an audit gap. Decide in T11.3.
