@@ -552,7 +552,7 @@ the guards you owned in HW1.
 
 - [x] **T7.2** *(Berat — done)* Run logging: `agentlib/runlog.py` + `run_agent` emit the record
       shape frozen above to `store/runs/runs.jsonl`. **This is why Dias is unblocked on day one.**
-- [ ] **T7.3** `monitor/judge.py` — grades each run on two axes with **named values, never a
+- [x] **T7.3** `monitor/judge.py` — grades each run on two axes with **named values, never a
       1–10 score**:
       **prompt adherence** — *strictly adheres / minor violation / serious violation*. The line:
       a **minor** violation leaves the user's outcome unchanged (it skipped a pull it should have
@@ -560,20 +560,20 @@ the guards you owned in HW1.
       boundary — followed injected text, surfaced cross-user data, or wrote outside the impact set.
       **grounding** — *grounded / partially grounded / ungrounded*: does every claim about the
       codebase trace to a tool result in `steps`?
-- [ ] **T7.3a** Every violation carries `expected` vs `observed`. **A verdict with no rationale
+- [x] **T7.3a** Every violation carries `expected` vs `observed`. **A verdict with no rationale
       is dropped by the code before it is reported** — a verdict you cannot check is
       indistinguishable from a hallucination, so this is enforced, not requested.
-- [ ] **T7.3b** `monitor/rubric.md` — the rubric as a hand-editable file, same pattern as
+- [x] **T7.3b** `monitor/rubric.md` — the rubric as a hand-editable file, same pattern as
       `rules/OPERATING_RULES.md`. Where the line falls is a judgement the team should be able to
       change without touching Python.
-- [ ] **T7.3c** The judge must distinguish *"the agent ignored a rule"* from *"the rule was never
+- [x] **T7.3c** The judge must distinguish *"the agent ignored a rule"* from *"the rule was never
       in its context"* using `assembled.instructions`. Reporting the second as the first blames
       the model for a bug in the assembler.
-- [ ] **T7.4** Report at least one **real** problem. Seed a genuine contradiction — team rule
+- [x] **T7.4** Report at least one **real** problem. Seed a genuine contradiction — team rule
       *"record a decision whenever a contract changes"* (R5) vs a personal rule *"keep diffs
       minimal, don't touch docs"* — run it, and have the judge find the run where one was
       silently dropped. `demos/demo_monitor_finding.py`.
-- [ ] **T7.5** `tests/test_monitor.py` + `tests/fixtures/runs_sample.jsonl` — hand-written log
+- [x] **T7.5** `tests/test_monitor.py` + `tests/fixtures/runs_sample.jsonl` — hand-written log
       records covering a clean run, a minor violation, a serious violation, and a rule that was
       never assembled. Judge the fixture with a **scripted** model so the test is deterministic.
 
@@ -801,37 +801,37 @@ except the `evaluate_silence` body, which is yours by contract.
 
 ### T11.1 — The monitor's real clock
 
-- [ ] `triggers/heartbeat.py` — fires on a **threshold of unjudged records** inside an interval
+- [x] `triggers/heartbeat.py` — fires on a **threshold of unjudged records** inside an interval
       loop. Implement the threshold: a count is less arbitrary than a timer, and decision #40
       already says the monitor runs on its own clock — it just never had one.
-- [ ] Persist a watermark so `judge_runs` grades only records newer than the last pass.
-- [ ] Posts `problems(verdicts)` **only**. `monitor/judge.py` stays read-only and untouched beyond
+- [x] Persist a watermark so `judge_runs` grades only records newer than the last pass.
+- [x] Posts `problems(verdicts)` **only**. `monitor/judge.py` stays read-only and untouched beyond
       whatever `_main()` needs to expose the watermark; if that turns into more than the entry
       point, raise it as a contract change rather than widening the diff.
-- [ ] **Silence:** a clean pass says nothing and records `reason_code="heartbeat_clean"`. A bot
+- [x] **Silence:** a clean pass says nothing and records `reason_code="heartbeat_clean"`. A bot
       that posts "all clear" every six hours gets muted, and a muted bot is useless on the one
       pass that finds something.
 
 ### T11.2 — The primary silence branch: the private-decision leak guard
 
-- [ ] Implement `channel/silence.py::evaluate_silence(...)` against Berat's T9.0b stub. Signature,
+- [x] Implement `channel/silence.py::evaluate_silence(...)` against Berat's T9.0b stub. Signature,
       docstring and return shape are **fixed** (CLAUDE.md §1).
-- [ ] The condition: a question arrives in a **shared** thread, and every decision relevant to the
+- [x] The condition: a question arrives in a **shared** thread, and every decision relevant to the
       component asked about is `visibility` private to a **different** user. The agent says
       nothing.
-- [ ] It must also not say *"there is a private decision about that, ask X."* That reveals the
+- [x] It must also not say *"there is a private decision about that, ask X."* That reveals the
       existence and the owner of a private record — the same leak wearing a hat. Existence is
       content.
-- [ ] The reason is recorded with `visibility="user:<owner>"`, so the decision's owner can see
+- [x] The reason is recorded with `visibility="user:<owner>"`, so the decision's owner can see
       that someone asked and got nothing, and nobody else can. `evidence` carries the uid and the
       asker, **never the decision text**.
-- [ ] Decided from the **query result** — `visible_to(asker)` returns nothing while an unfiltered
+- [x] Decided from the **query result** — `visible_to(asker)` returns nothing while an unfiltered
       count returns rows — not by handing the model the rows and asking it to keep a secret
       (#24). The guard is a comparison of two counts, not a judgement call.
 
 ### T11.3 — The admin subagent
 
-- [ ] `agents/admin.py` + `rules/ADMIN_BOUNDARY.md`, following `agents/executor_brief.md`: the
+- [x] `agents/admin.py` + `rules/ADMIN_BOUNDARY.md`, following `agents/executor_brief.md`: the
       boundary is a **written brief pushed every run**, not prose buried in code (#31).
 
       | | Ordinary path | Admin subagent |
@@ -841,23 +841,23 @@ except the `evaluate_silence` body, which is yours by contract.
       | Write scope | `()` — denied by #25 | granted per run via `impact_scope` |
       | Entry | any channel message | allowlisted admin id **and** an explicit in-channel confirmation |
 
-- [ ] The registry is narrow **by construction** — built from an explicit list, the way
+- [x] The registry is narrow **by construction** — built from an explicit list, the way
       `build_executor_registry()` is. Never `build_registry()` filtered at call time: a filter is
       one bug away from being a full registry, a list is not.
-- [ ] Jobs worth having: re-point an orphaned decision's `symbol_uid` (pairs with T10.2), promote
+- [x] Jobs worth having: re-point an orphaned decision's `symbol_uid` (pairs with T10.2), promote
       a `proposed` inferred memory to `accepted` (#28 defines the promotion and nothing in the
       system currently performs it), prune a dead graph node.
 
 ### T11.4 — Docs + tests
 
-- [ ] Decisions **#47** (silence is decided from the filtered query result, and the guard covers
+- [x] Decisions **#47** (silence is decided from the filtered query result, and the guard covers
       metadata — existence and ownership — as well as content) and **#48** (the admin registry is
       narrow by construction, and gated on identity *plus* confirmation, because an allowlist
       alone makes every admin message a privileged one).
-- [ ] `tests/test_silence.py` — the guard fires for a foreign private decision; does **not** fire
+- [x] `tests/test_silence.py` — the guard fires for a foreign private decision; does **not** fire
       for a team decision, nor for the owner asking about their own; the recorded `evidence`
       contains no decision text; a clean heartbeat sends nothing and writes one row.
-- [ ] `tests/test_admin.py` — a non-admin id cannot reach an admin tool; an admin id without
+- [x] `tests/test_admin.py` — a non-admin id cannot reach an admin tool; an admin id without
       confirmation cannot either; the admin registry contains exactly the listed tools.
 
 **Depends on:** T9.0 stubs, and T9.4 for `record_silence`. Not on Alejandro.
