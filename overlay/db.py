@@ -15,6 +15,8 @@ Tables:
     runs           one row per agent run, for the monitor to grade after the fact
     run_scratch    append-only shared memory between the planner and the executor
     scratch_reads  which scratch keys each agent actually READ (see T6.5)
+    silences       every time the agent deliberately said nothing, and why
+                   (HW3, T9.4)
 
 `sqlite3` is stdlib, so this adds no dependency (CLAUDE.md §4).
 """
@@ -106,6 +108,24 @@ CREATE TABLE IF NOT EXISTS scratch_reads (
     ts      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reads_run ON scratch_reads(run_id);
+
+-- HW3 (T9.4). A deliberate non-answer is an OUTCOME, not an absence, and the
+-- reason has to be readable later or "silence with a reason recorded" is just
+-- silence. It carries its own `visibility` because the most important silence
+-- we have — the private-decision leak guard (T11.2) — must be visible to the
+-- OWNER of the withheld decision and to nobody else. A silence log that
+-- everyone can read would announce exactly what the silence was protecting.
+CREATE TABLE IF NOT EXISTS silences (
+    silence_id  TEXT PRIMARY KEY,
+    run_id      TEXT,               -- NULL when no run was ever opened
+    trigger     TEXT NOT NULL,      -- telegram | github | heartbeat
+    reason_code TEXT NOT NULL,      -- closed set, see channel.silence
+    evidence    TEXT NOT NULL,      -- what was CHECKED, never what was withheld
+    visibility  TEXT NOT NULL,      -- 'team' | 'user:<id>'
+    ts          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_silences_vis ON silences(visibility);
+CREATE INDEX IF NOT EXISTS idx_silences_reason ON silences(reason_code);
 """
 
 
@@ -224,6 +244,45 @@ def query_decisions(
         where.append(clause)
         params += uids
 
+    rows = conn.execute(
+        f"SELECT * FROM decisions WHERE {' AND '.join(where)} ORDER BY ts ASC",
+        params,
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def decisions_across_scopes(
+    conn: sqlite3.Connection,
+    *,
+    symbol_uids: Iterable[str],
+    statuses: Iterable[str] = ("accepted", "proposed"),
+) -> list[dict[str, Any]]:
+    """Decisions on `symbol_uids` **ignoring visibility**. Read the whole docstring.
+
+    This is the one query in the system that crosses the scope boundary, and it
+    exists for exactly one caller: the private-decision leak guard
+    (`channel.silence.evaluate_silence`, T11.2). That guard has to compare what a
+    user CAN see against what EXISTS, and it cannot make that comparison from the
+    filtered side alone.
+
+    **Its results must never reach a model, a channel, or a log.** The guard
+    returns a decision, not text; these rows die on its stack frame. Anything
+    else in the system that wants decisions calls `query_decisions`, which
+    filters (decision #24).
+
+    Kept deliberately awkward to reach — a distinct name, not a flag on
+    `query_decisions` — because `query_decisions(..., all_scopes=True)` is one
+    autocomplete away from being the default in a hurry.
+    """
+    uids = [u for u in symbol_uids if u]
+    if not uids:
+        return []
+    status_list = list(statuses)
+    params: list[str] = list(uids)
+    where = [f"symbol_uid IN ({','.join('?' * len(uids))})"]
+    if status_list:
+        where.append(f"status IN ({','.join('?' * len(status_list))})")
+        params += status_list
     rows = conn.execute(
         f"SELECT * FROM decisions WHERE {' AND '.join(where)} ORDER BY ts ASC",
         params,
@@ -371,6 +430,86 @@ def scratch_read(
     if row is None:
         return None
     return json.loads(row["value"])
+
+
+# --- silences (HW3, T9.4) -----------------------------------------------------
+
+def record_silence(
+    conn: sqlite3.Connection,
+    *,
+    trigger: str,
+    reason_code: str,
+    evidence: str,
+    visibility: str = TEAM,
+    run_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Write down that the agent chose to say nothing. Returns the stored row.
+
+    Silence is the one outcome that leaves no trace anywhere else — no reply in
+    the channel, often no run record, nothing for the monitor to grade. If it is
+    not written here it did not happen as far as anyone can tell afterwards,
+    which makes a deliberate non-answer indistinguishable from a crashed worker.
+
+    `evidence` is the caller's contract to keep: it records what was CHECKED
+    (uids, counts, who asked), never the content that was withheld. Nothing in
+    this function can enforce that, which is why it is stated in
+    `channel.silence.SilenceDecision` as well.
+    """
+    row = {
+        "silence_id": f"s_{uuid.uuid4().hex[:12]}",
+        "run_id": run_id,
+        "trigger": trigger,
+        "reason_code": reason_code,
+        "evidence": evidence,
+        "visibility": visibility,
+        "ts": _now(),
+    }
+    conn.execute(
+        "INSERT INTO silences (silence_id, run_id, trigger, reason_code,"
+        " evidence, visibility, ts) VALUES (:silence_id, :run_id, :trigger,"
+        " :reason_code, :evidence, :visibility, :ts)",
+        row,
+    )
+    conn.commit()
+    return row
+
+
+def query_silences(
+    conn: sqlite3.Connection,
+    *,
+    user_id: Optional[str],
+    reason_code: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Silences `user_id` may see, newest first.
+
+    Filtered through the same `visible_to` fragment as decisions — **in the
+    query, never after** (decision #24). The private-decision guard depends on
+    this: its record names the owner's scope, so the owner learns somebody went
+    looking and the asker learns nothing, including that there was anything to
+    learn.
+    """
+    vis_sql, params = visible_to(user_id)
+    where = [vis_sql]
+    if reason_code:
+        where.append("reason_code = ?")
+        params = params + [reason_code]
+
+    rows = conn.execute(
+        f"SELECT * FROM silences WHERE {' AND '.join(where)}"
+        " ORDER BY ts DESC, rowid DESC LIMIT ?",
+        params + [int(limit)],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_silences(conn: sqlite3.Connection, *, user_id: Optional[str]) -> int:
+    """How many silences `user_id` may see. Same filter, same rule."""
+    vis_sql, params = visible_to(user_id)
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n FROM silences WHERE {vis_sql}", params
+    ).fetchone()
+    return int(row["n"])
 
 
 def scratch_dump(conn: sqlite3.Connection, run_id: str) -> dict[str, list[dict]]:

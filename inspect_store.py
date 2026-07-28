@@ -13,6 +13,7 @@ Usage:
     python inspect_store.py decisions       # the authored overlay
     python inspect_store.py memory          # free-form memory
     python inspect_store.py runs            # run log, newest last
+    python inspect_store.py silences        # what the agent chose not to say
     python inspect_store.py trace <run_id>  # ONE run, step by step
     python inspect_store.py --user berat    # scope it to one user's view
 
@@ -91,6 +92,37 @@ def show_memory(user: str | None) -> None:
     print("  '?' marks status=proposed — inferred, not yet shaping behaviour.")
 
 
+def show_silences(user: str | None, limit: int) -> None:
+    """Every time the agent deliberately said nothing (HW3, T9.4).
+
+    Worth reading with and without `--user`. A silence recorded against one
+    person's scope is invisible to everyone else *including here* — the leak
+    guard would be pointless if the audit view announced what it withheld.
+    """
+    _h(f"SILENCES  ({overlay_db.db_path()})")
+    if not overlay_db.db_path().exists():
+        print("  (no overlay yet — run service.py or orchestrator.py once)")
+        return
+    conn = overlay_db.connect()
+    try:
+        rows = overlay_db.query_silences(conn, user_id=user, limit=limit)
+        total = overlay_db.count_silences(conn, user_id=user)
+    finally:
+        conn.close()
+
+    if not rows:
+        print(f"  (none visible to {user or 'anyone'})")
+        return
+    for r in rows:
+        print(f"\n  {r['silence_id']}  {r['reason_code']}  [{r['visibility']}]")
+        print(f"    trigger  : {r['trigger']}   at {r['ts']}")
+        print(f"    evidence : {_short(r['evidence'])}")
+        if r.get("run_id"):
+            print(f"    run      : {r['run_id']}")
+    print(f"\n  {total} silence(s) visible to {user or 'anyone (admin view)'}")
+    print("  A silence with a reason on file is a correct outcome, not a failure.")
+
+
 def show_runs(limit: int) -> None:
     _h(f"RUNS  ({runs_file()})")
     records = read_runs(limit)
@@ -163,7 +195,8 @@ def show_trace(run_id: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Inspect the RADF stores.")
     parser.add_argument("what", nargs="?", default="all",
-                        choices=["all", "decisions", "memory", "runs", "trace"])
+                        choices=["all", "decisions", "memory", "runs",
+                                 "silences", "trace"])
     parser.add_argument("run_id", nargs="?", default=None)
     parser.add_argument("--user", default=None,
                         help="apply this user's visibility filter (the agent's view)")
@@ -181,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
         show_memory(args.user)
     if args.what in ("all", "runs"):
         show_runs(args.limit)
+    if args.what in ("all", "silences"):
+        show_silences(args.user, args.limit)
     return 0
 
 
