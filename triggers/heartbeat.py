@@ -171,6 +171,8 @@ def run_forever(
 
 def _main() -> int:
     """Run one pass from the CLI — the manual tick of the background clock."""
+    from dotenv import load_dotenv  # the CLI entry point needs the key, like main.py
+    load_dotenv()
     summary = run_once(threshold=int(os.environ.get("RADF_HEARTBEAT_THRESHOLD", "1")))
     if not summary["acted"]:
         print(f"heartbeat: {summary['pending']} pending, threshold not reached")
