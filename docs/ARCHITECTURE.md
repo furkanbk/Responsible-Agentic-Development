@@ -611,6 +611,18 @@ the only cross-scope read in the system. Those rows die on that stack frame: the
 returns a decision, never text. `evidence` records what was *checked*, never what was withheld.
 
 **`agentlib/approval.py` — the gate, off stdin.**
+`preview_args` renders both gates (channel and CLI), and carries the plan's
+constraints alongside the reduced payload: `current_constraints()`, set by the
+executor from the plan. The callback shape `(name, args) -> bool` is frozen
+(#41), so the gate can only see the tool call — it cannot see that a recorded
+decision forbids the write it is describing, and a human asked to approve a byte
+count with no constraint will approve it. Observed on a real run: the planner
+recorded two constraint ids without judging them, the executor's model chose to
+comply, the gate said `apply_change(... '<2583 chars>')`, and the write landed.
+Nothing upstream of the gate is guaranteed to catch that case, so the prompt has
+to carry the facts the model had. Summaries are visibility-scoped like every
+other read (#24).
+
 ```
 ChannelGate(send, timeout=180)
   .callback_for(user_id, thread_key) -> approve(name, args) -> bool   # run_agent's shape

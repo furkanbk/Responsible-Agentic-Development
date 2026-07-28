@@ -40,6 +40,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from agentlib.session import current_constraints
+
 #: Answers that approve. Everything else declines, including silence, "ok",
 #: "sure" and "go ahead" — a gate should not be doing intent classification, and
 #: an ambiguous approval is a decline.
@@ -73,19 +75,35 @@ class PendingApproval:
 
 
 def preview_args(name: str, args: dict[str, Any]) -> str:
-    """A human-readable one-liner for a gated call.
+    """A human-readable summary of a gated call, with what constrains it.
 
     A whole file's contents in a chat message is unreadable, and an unreadable
     approval prompt gets approved reflexively — which is worse than no gate,
     because it launders the write through a human who did not actually look.
-    Same reduction `orchestrator.approve_via_input` makes, kept consistent so
-    the two gates describe the same action the same way.
+
+    The constraints matter for the same reason and are the harder half. Reducing
+    the payload stops the human skimming; naming the decisions stops them
+    approving a write that a recorded decision forbids, which is a thing that
+    happened on a real run of this system. Nothing upstream of the gate is
+    guaranteed to catch that case — the planner records constraint ids without
+    judging them, and the executor's refusal is model judgement — so the gate is
+    the last place it can be caught, and it can only be caught by whoever is
+    reading the prompt. They need the facts the model had.
+
+    Both gates render through this, so the CLI and the channel describe the same
+    action the same way.
     """
     shown = dict(args)
     body = shown.get("new_content")
     if isinstance(body, str):
         shown["new_content"] = f"<{len(body)} chars, {body.count(chr(10)) + 1} lines>"
-    return f"{name}({shown})"
+    line = f"{name}({shown})"
+
+    constraints = current_constraints()
+    if not constraints:
+        return line
+    return (line + "\n  Decisions on file for this change — read before approving:\n"
+            + "\n".join(f"    - {c}" for c in constraints))
 
 
 class ChannelGate:

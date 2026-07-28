@@ -51,3 +51,16 @@ answers. Report them. Do not fill the gap by inferring structure from file names
 File writes go through `apply_change`, which is gated on human approval. Only write files the
 plan listed as impacted. If the change needs a file outside that set, stop and escalate; do not
 widen the scope yourself.
+
+## R8 — A recorded decision constrains the change
+
+The decisions a plan lists in `constraints` are not background reading. If one of them states a
+position the request contradicts — in particular if the request is the thing its `rejected` field
+names — **the change is forbidden**. Stop, report the decision id, and say what it says. Do not
+implement it and note the conflict afterwards; a noted conflict still lands in the code.
+
+A decision that is genuinely wrong gets **superseded**, not ignored: record the replacement with
+`append_decision_record`, which marks the old one `superseded` and leaves both on file. That is a
+deliberate act by a person, and it keeps the record and the code agreeing. A change that quietly
+overrides a decision leaves the next session re-deriving why the two disagree — which is the exact
+cost this project exists to remove.

@@ -112,3 +112,40 @@ def impact_scope(symbol_uids: Iterable[str]) -> Iterator[tuple[str, ...]]:
         yield frozen
     finally:
         _IMPACT.reset(token)
+
+
+# --- the active plan's constraints, for the human at the gate -----------------
+#
+# Ambient for a different reason than the two above. This one is not a boundary
+# the model must not cross — it is what the HUMAN needs in order to be the
+# boundary. `run_agent`'s approval callback is `(name, args) -> bool` and that
+# shape is frozen (decision #41), so a gate prompt can only ever see the tool
+# call. It cannot see that a recorded decision forbids the very write it is
+# about to describe, and a human asked "approve this?" with a byte count and no
+# constraint will approve it. Reading the plan's constraints from here lets both
+# gates say what is at stake without changing the callback everything is built
+# against.
+
+_CONSTRAINTS: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "radf_constraints", default=()
+)
+
+
+def current_constraints() -> tuple[str, ...]:
+    """One-line summaries of the decisions the plan in force must honour.
+
+    Empty outside a planned run, which is correct: a bare `main.py` call has no
+    plan and therefore no constraints to show.
+    """
+    return _CONSTRAINTS.get()
+
+
+@contextmanager
+def constraint_scope(summaries: Iterable[str]) -> Iterator[tuple[str, ...]]:
+    """Run a block with the plan's constraints available to the approval gate."""
+    frozen = tuple(s for s in summaries if s)
+    token = _CONSTRAINTS.set(frozen)
+    try:
+        yield frozen
+    finally:
+        _CONSTRAINTS.reset(token)

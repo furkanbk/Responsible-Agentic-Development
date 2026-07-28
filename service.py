@@ -66,8 +66,10 @@ CHANGE_PREFIX = "/change"
 MAX_STEPS = 8
 
 #: Punctuation allowed between a pinned component and the request that follows
-#: it, so `/change project/app.py — centre the title` reads naturally.
-_SEPARATORS = "—–-:,"
+#: it, so both `/change project/app.py — centre the title` and
+#: `/change project/app.py. Centre the title` read naturally. The full stop is
+#: in here because that is how people actually type it.
+_SEPARATORS = "—–-:,."
 
 # Narrow by construction. Anyone may read the team's published knowledge.
 _READ_TOOLS = (query_component_graph, retrieve_decisions, retrieve_memory,
@@ -216,8 +218,13 @@ def _looks_like_component(token: str) -> bool:
         return False
     if token.endswith((".py", ".md")):
         return True
-    return ("." in token and "/" not in token and not token.endswith(".")
-            and token.replace(".", "").replace("_", "").isalnum())
+    if "/" in token or "." not in token:
+        return False
+    # A dotted module path. Every segment must be a plausible identifier, which
+    # is what keeps an abbreviation like "e.g." from being read as a component
+    # and silently seeding the plan at a module that does not exist.
+    segments = token.split(".")
+    return all(len(s) >= 2 and s.replace("_", "").isalnum() for s in segments)
 
 
 def split_component_hint(request: str) -> tuple[str, str]:

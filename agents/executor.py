@@ -39,7 +39,12 @@ from typing import Any, Callable, Optional
 from agentlib.context import assemble
 from agentlib.loop import run_agent
 from agentlib.schemas import schema_for
-from agentlib.session import current_session, impact_scope
+from agentlib.session import (
+    constraint_scope,
+    current_session,
+    current_user,
+    impact_scope,
+)
 from agents.envelope import AgentResult, validate_plan
 from overlay import db as overlay_db
 from tools.apply_change import apply_change
@@ -192,11 +197,33 @@ def run_executor(
         include_decisions=False,
     )
 
+    if run_log is not None:
+        # Decision #32: the record must carry what was ASSEMBLED, not just what
+        # was done — "the agent ignored a rule" and "the rule was never in its
+        # context" are different faults with opposite fixes, and the judge can
+        # only tell them apart from `assembled.instructions`.
+        #
+        # The loop cannot do this for us here. `run_agent` FLUSHES whatever log
+        # it is given, and the orchestrator owns the single record for this run,
+        # so passing it through would write the run out twice. Copying the
+        # context across is the part that was missing: until this line, every
+        # /change run reached the monitor with zero instructions and zero steps,
+        # which made every violation on the write path unprovable by
+        # construction — the judge graded them all as clean because it had
+        # nothing to convict on.
+        run_log.instructions = context.instructions
+        run_log.data_blocks = list(context.data_blocks)
+        run_log.sources = dict(context.sources)
+
     task = f"{_render_plan(plan)}\n\n---\n\nThe original request was:\n{request}"
 
-    # The impact set is ambient for the whole run: apply_change reads it from
-    # here, so the model cannot widen its own write permission.
-    with impact_scope(plan.get("impacted") or []):
+    # Two ambient values, for two different readers. The impact set bounds what
+    # `apply_change` will write, so the model cannot widen its own permission.
+    # The constraints are for the HUMAN at the gate, who is the last chance to
+    # catch a write a recorded decision forbids and cannot take it without
+    # being told what the decisions say.
+    with impact_scope(plan.get("impacted") or []), \
+            constraint_scope(constraint_summaries(plan)):
         result = run_agent(
             task,
             schemas,
@@ -209,7 +236,44 @@ def run_executor(
             run_log=None,  # the orchestrator owns the single run record
         )
 
+    if run_log is not None:
+        run_log.steps = list(result.get("trace") or [])
+
     return _envelope_from_loop(result, plan, run_log)
+
+
+def constraint_summaries(plan: dict) -> list[str]:
+    """One line per decision the plan must honour, for the approval prompt.
+
+    Resolved from the plan's `constraints` ids against the overlay, under the
+    acting user's visibility — so a private decision reaches the gate of the
+    person it belongs to and nobody else's, the same rule every other read
+    follows (decision #24).
+
+    A `rejected` clause is included when there is one, because it is the field
+    that most often says the request is forbidden, and it is the field a human
+    skimming a decision is most likely to miss.
+    """
+    wanted = set(plan.get("constraints") or [])
+    if not wanted:
+        return []
+    conn = overlay_db.connect()
+    try:
+        rows = overlay_db.query_decisions(
+            conn, user_id=current_user(), symbol_uids=plan.get("impacted") or []
+        )
+    finally:
+        conn.close()
+
+    out: list[str] = []
+    for row in rows:
+        if row["decision_id"] not in wanted:
+            continue
+        line = f"{row['decision_id']} ({row['visibility']}): {row['decision']}"
+        if row.get("rejected"):
+            line += f"  — REJECTED: {row['rejected']}"
+        out.append(line)
+    return out
 
 
 def _default_model() -> str:

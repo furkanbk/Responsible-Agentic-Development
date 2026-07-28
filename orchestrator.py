@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 
 from dotenv import load_dotenv
 
+from agentlib.approval import preview_args
 from agentlib.core import CHEAP, STRONG
 from agentlib.runlog import RunLog
 from agentlib.session import session_scope
@@ -44,14 +45,14 @@ PLAN_KEY = "plan"
 
 
 def approve_via_input(name: str, args: dict) -> bool:
-    """Human gate for irreversible tools. Anything but an explicit 'y' declines."""
-    preview = dict(args)
-    # A whole file's contents in a terminal prompt is unreadable, and an
-    # unreadable prompt gets approved reflexively — which is worse than no gate.
-    if "new_content" in preview:
-        body = preview["new_content"]
-        preview["new_content"] = f"<{len(body)} chars, {body.count(chr(10)) + 1} lines>"
-    print(f"\n    [GATE] {name}({preview})")
+    """Human gate for irreversible tools. Anything but an explicit 'y' declines.
+
+    Renders through `agentlib.approval.preview_args` so the terminal gate and
+    the channel gate describe the same action — and, more to the point, surface
+    the same constraints. The two drifting is how one of them ends up asking a
+    human to approve a write that a recorded decision forbids, without saying so.
+    """
+    print(f"\n    [GATE] {preview_args(name, args)}")
     return input("    Approve this irreversible action? [y/N] ").strip().lower() == "y"
 
 

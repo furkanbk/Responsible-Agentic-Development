@@ -631,11 +631,19 @@ class TestChangeComponentHint:
         hint, rest = split_component_hint(f"project/app.py {separator} centre it")
         assert (hint, rest) == ("project/app.py", "centre it")
 
+    def test_a_trailing_full_stop_is_how_people_actually_type_it(self):
+        from service import split_component_hint
+
+        assert split_component_hint("project/app.py. Move the title left.") == (
+            "project/app.py", "Move the title left.")
+
     @pytest.mark.parametrize("request_text", [
         "make the title centred",
         "Move the page title to the left corner.",
         "add a delete_task function to the store",
         "centre it. project/app.py holds the template",   # component, but not leading
+        "e.g. move the title to the left",                # abbreviation, not a module
+        "i.e. left-align it",
     ])
     def test_prose_is_never_mistaken_for_a_component(self, request_text):
         """A false positive would silently plan against the wrong seed."""
@@ -683,6 +691,105 @@ class TestChangeComponentHint:
             service.run_change_request = original
 
         assert seen == {"request": "centre the title", "hint": "project/app.py"}
+
+
+class TestGateShowsConstraints:
+    """The gate prompt names the decisions on file (T9.6b).
+
+    Nothing upstream reliably stops a write a recorded decision forbids — the
+    planner records constraint ids without judging them, and the executor's
+    refusal is model judgement. The gate is the last place it can be caught, and
+    only the human reading the prompt can catch it, so the prompt has to carry
+    the facts the model had.
+    """
+
+    def test_a_bare_gate_prompt_is_unchanged_when_no_plan_is_in_force(self):
+        from agentlib.approval import preview_args
+
+        text = preview_args("apply_change", {"path": "a.py", "new_content": "x"})
+        assert text == "apply_change({'path': 'a.py', 'new_content': '<1 chars, 1 lines>'})"
+
+    def test_the_payload_is_still_reduced_to_a_count(self):
+        """An unreadable prompt gets approved reflexively."""
+        from agentlib.approval import preview_args
+
+        body = "line\n" * 500
+        text = preview_args("apply_change", {"new_content": body})
+        assert body not in text and "501 lines" in text
+
+    def test_constraints_in_force_are_listed_for_the_human(self):
+        from agentlib.approval import preview_args
+        from agentlib.session import constraint_scope
+
+        with constraint_scope(["d_1 (team): title is centered  — REJECTED: left-aligning it"]):
+            text = preview_args("apply_change", {"path": "project/app.py",
+                                                 "new_content": "x"})
+        assert "read before approving" in text
+        assert "d_1" in text and "REJECTED: left-aligning it" in text
+
+    def test_the_scope_does_not_leak_past_the_run(self):
+        from agentlib.approval import preview_args
+        from agentlib.session import constraint_scope, current_constraints
+
+        with constraint_scope(["d_1: something"]):
+            assert current_constraints()
+        assert current_constraints() == ()
+        assert "read before approving" not in preview_args("apply_change", {})
+
+    def test_summaries_are_scoped_to_the_acting_user(self, tmp_path, monkeypatch):
+        """A private decision reaches its owner's gate and nobody else's."""
+        from agentlib.session import session_scope
+        from agents.executor import constraint_summaries
+        from overlay import db as overlay_db
+
+        monkeypatch.setenv("RADF_DB_PATH", str(tmp_path / "t.db"))
+        conn = overlay_db.connect()
+        mine = overlay_db.insert_decision(
+            conn, component="project/app.py", decision="mine", rationale="r",
+            status="accepted", author_id="berat", visibility="user:berat")
+        theirs = overlay_db.insert_decision(
+            conn, component="project/app.py", decision="theirs", rationale="r",
+            status="accepted", author_id="dias", visibility="user:dias")
+        conn.close()
+
+        plan = {"impacted": ["Module:project.app"],
+                "constraints": [mine["decision_id"], theirs["decision_id"]]}
+
+        with session_scope("berat", "t"):
+            summaries = constraint_summaries(plan)
+        assert len(summaries) == 1 and mine["decision_id"] in summaries[0]
+
+        with session_scope("dias", "t"):
+            summaries = constraint_summaries(plan)
+        assert len(summaries) == 1 and theirs["decision_id"] in summaries[0]
+
+
+class TestExecutorFillsTheRunLog:
+    """Decision #32 on the write path — the monitor cannot grade what is not logged."""
+
+    def test_the_assembled_context_and_the_trace_reach_the_record(self, monkeypatch):
+        from agentlib.runlog import RunLog
+        from agents import executor as ex
+
+        plan = {"impacted": ["Module:project.app"], "constraints": [],
+                "rules_applied": [], "steps": [{"path": "project/app.py", "intent": "x"}],
+                "open_questions": []}
+        monkeypatch.setattr(ex.overlay_db, "scratch_read", lambda *a, **k: plan)
+        monkeypatch.setattr(ex.overlay_db, "scratch_dump", lambda *a, **k: {})
+        monkeypatch.setattr(ex, "run_agent", lambda *a, **k: {
+            "answer": "done", "steps": 1, "stopped": "answered",
+            "trace": [{"tool": "read_source_file", "args": {}, "output": {}, "branch": "ok"}],
+        })
+
+        run_log = RunLog(agent="orchestrator", user_id="berat", thread_id="t")
+        ex.run_executor("do it", run_id="r_x", approve=None, verbose=False, run_log=run_log)
+
+        # Was empty on every /change run before this: the judge had no rules to
+        # convict on and graded every write-path violation as clean.
+        assert run_log.instructions, "the executor's instructions must reach the log"
+        assert "Delegation brief" in run_log.instructions
+        assert run_log.sources, "the pushed/pulled source list must reach the log"
+        assert len(run_log.steps) == 1
 
 
 class TestSilenceSeam:
