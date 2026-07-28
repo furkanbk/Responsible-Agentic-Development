@@ -628,7 +628,22 @@ build_channel_registry(can_write) -> (schemas, registry)
   read-only : query_component_graph, retrieve_decisions, retrieve_memory,
               verify_graph_integrity
   +can_write: append_decision_record, save_memory
+split_component_hint(request) -> (component_hint, request)
+  "/change project/app.py — centre the title"  ->  pins the planner's seed
+  "/change centre the title"                   ->  seed proposed by the model
 ```
+`/change` accepts an optional **leading component**, passed through as
+`orchestrator.run_change_request(component_hint=...)` — the channel's version of
+the `--component` flag the CLI has always had. It is an affordance, not a new
+capability: it pins a value the caller already knew, and a pinned seed *narrows*
+the impact set rather than widening it, so it cannot authorise a write the model
+would otherwise have been refused. It exists because the seed decides the impact
+set and the impact set decides what may be written, which made it the most
+consequential value in the plan and — via `_propose_seed_and_steps`, capped at
+400 output tokens with reasoning competing for the budget — the least reliable
+one: roughly one request in five failed before a single decision was read.
+`_looks_like_component` is deliberately narrow, because a false positive plans
+against a component the user never named, which is worse than not pinning at all.
 Both registries are built from explicit lists, never by filtering the full registry — a
 filter is one bug away from being a full registry. No `GATED` tool appears in either; writes
 go through `/change`, which runs the HW2 orchestrator with the gate wired to the channel.

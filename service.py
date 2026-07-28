@@ -65,6 +65,10 @@ from tools.memory_tools import retrieve_memory, save_memory
 CHANGE_PREFIX = "/change"
 MAX_STEPS = 8
 
+#: Punctuation allowed between a pinned component and the request that follows
+#: it, so `/change project/app.py — centre the title` reads naturally.
+_SEPARATORS = "—–-:,"
+
 # Narrow by construction. Anyone may read the team's published knowledge.
 _READ_TOOLS = (query_component_graph, retrieve_decisions, retrieve_memory,
                verify_graph_integrity)
@@ -76,6 +80,9 @@ HELP_TEXT = (
     "I answer questions about this codebase from its decision overlay.\n"
     "  ask anything          — a read-only question over the knowledge graph\n"
     f"  {CHANGE_PREFIX} <request>      — plan and implement a change (allowlisted users)\n"
+    f"  {CHANGE_PREFIX} <component> <request>\n"
+    "                        — same, but pins the plan's starting component, e.g.\n"
+    f"                          {CHANGE_PREFIX} project/app.py — centre the page title\n"
     "  /whoami               — how I resolved your identity\n"
     "  /help                 — this message"
 )
@@ -197,20 +204,76 @@ def answer_question(event: InboundEvent, identity: Identity, *, model: str,
             f"Run id {result.get('run_id')} if you want to look.")
 
 
+def _looks_like_component(token: str) -> bool:
+    """True for `project/app.py` or `project.app`; false for an ordinary word.
+
+    Deliberately narrow. A false positive silently pins the plan to the wrong
+    seed, which is worse than not pinning it at all — so anything that could be
+    prose ("corner.", "Move") falls through to the model.
+    """
+    token = token.strip().rstrip(_SEPARATORS)
+    if not token:
+        return False
+    if token.endswith((".py", ".md")):
+        return True
+    return ("." in token and "/" not in token and not token.endswith(".")
+            and token.replace(".", "").replace("_", "").isalnum())
+
+
+def split_component_hint(request: str) -> tuple[str, str]:
+    """Split a leading component reference off a change request.
+
+    Returns `(component_hint, remaining_request)`; an empty hint means the
+    planner proposes a seed with a model call, exactly as before.
+
+        "project/app.py — centre the title"  ->  ("project/app.py", "centre the title")
+        "make the title centred"             ->  ("",               "make the title centred")
+
+    **Why the channel needs this.** The seed decides the impact set and the
+    impact set decides what may be written, so it is the most consequential
+    value in the plan — and leaving it to `_propose_seed_and_steps` makes it the
+    least reliable one. That call caps the model at 400 output tokens with
+    reasoning competing for the same budget, so roughly one request in five comes
+    back unparseable and the run fails before a single decision is read.
+    `orchestrator.py` has always had `--component` for this; a channel user had
+    no way to say the same thing. This is that affordance, not a new capability:
+    it pins a value the caller already knew, and pinning it *narrows* the impact
+    set rather than widening it, so it cannot authorise a write the model would
+    otherwise have been refused.
+    """
+    parts = request.strip().split(maxsplit=1)
+    if not parts or not _looks_like_component(parts[0]):
+        return "", request
+    rest = (parts[1] if len(parts) > 1 else "").lstrip()
+    rest = rest.lstrip(_SEPARATORS).lstrip()
+    if not rest:
+        # A component with nothing after it is not a change request. Hand the
+        # text back untouched so the caller's usage branch still fires.
+        return "", request
+    return parts[0].rstrip(_SEPARATORS), rest
+
+
 def apply_change_request(event: InboundEvent, identity: Identity, gate: ChannelGate,
                          *, model: str, verbose: bool) -> str:
     """The HW2 pipeline, with the gate answered over the channel instead of stdin."""
-    request = event.text[len(CHANGE_PREFIX):].strip()
+    # Slice the STRIPPED text: `event.text` may carry leading whitespace, and
+    # slicing the raw string would eat that many characters of the request.
+    request = (event.text or "").strip()[len(CHANGE_PREFIX):].strip()
     if not request:
-        return f"Usage: {CHANGE_PREFIX} <what you want changed>"
+        return f"Usage: {CHANGE_PREFIX} [<component>] <what you want changed>"
     if not identity.can_write:
         return ("I only take change requests from allowlisted users, and I don't "
                 "recognise you. Ask a maintainer to add your id.")
+
+    component_hint, request = split_component_hint(request)
+    if verbose and component_hint:
+        print(f"  [SEED] pinned to {component_hint!r} — no model call to guess it")
 
     result = run_change_request(
         request,
         user_id=identity.session.user_id,
         thread_id=identity.session.thread_id,
+        component_hint=component_hint,
         approve=gate.callback_for(identity.session.user_id, event.thread_key),
         model=model,
         verbose=verbose,

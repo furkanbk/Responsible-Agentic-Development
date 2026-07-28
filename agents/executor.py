@@ -86,7 +86,13 @@ def _render_plan(plan: dict) -> str:
     lines = ["# The plan you are implementing", ""]
     lines.append("Impacted components (the ONLY files you may write):")
     for uid in plan.get("impacted") or ["(none)"]:
-        lines.append(f"  - {uid}")
+        # Show the component id beside the uid. `query_component_graph` resolves
+        # node ids and paths, NOT uids, so a plan that renders only the uid
+        # invites the executor to look up "Module:project.app" and be told it
+        # does not exist — which reads as a missing component rather than as the
+        # wrong spelling of a present one.
+        component = uid.split(":", 1)[-1] if ":" in uid else uid
+        lines.append(f"  - {uid}   (ask the graph about it as: {component})")
     if plan.get("constraints"):
         lines.append("")
         lines.append("Decision ids this plan honours — call retrieve_decisions "

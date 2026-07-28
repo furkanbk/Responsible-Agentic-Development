@@ -603,6 +603,88 @@ class TestServiceRegistry:
             assert "parameters" in schema
 
 
+class TestChangeComponentHint:
+    """`/change <component> <request>` pins the planner's seed (T9.6a).
+
+    The seed decides the impact set and the impact set decides what may be
+    written, so the parse has one asymmetric risk: a FALSE POSITIVE pins the
+    plan to a component the user never named. Most of these tests are about
+    that direction.
+    """
+
+    def test_a_repo_path_is_lifted_out_of_the_request(self):
+        from service import split_component_hint
+
+        assert split_component_hint("project/app.py — centre the title") == (
+            "project/app.py", "centre the title")
+
+    def test_a_dotted_module_path_works_too(self):
+        from service import split_component_hint
+
+        assert split_component_hint("project.store add delete_task") == (
+            "project.store", "add delete_task")
+
+    @pytest.mark.parametrize("separator", ["—", "–", "-", ":", ","])
+    def test_the_separator_is_not_part_of_the_request(self, separator):
+        from service import split_component_hint
+
+        hint, rest = split_component_hint(f"project/app.py {separator} centre it")
+        assert (hint, rest) == ("project/app.py", "centre it")
+
+    @pytest.mark.parametrize("request_text", [
+        "make the title centred",
+        "Move the page title to the left corner.",
+        "add a delete_task function to the store",
+        "centre it. project/app.py holds the template",   # component, but not leading
+    ])
+    def test_prose_is_never_mistaken_for_a_component(self, request_text):
+        """A false positive would silently plan against the wrong seed."""
+        from service import split_component_hint
+
+        assert split_component_hint(request_text) == ("", request_text)
+
+    def test_a_bare_component_is_not_a_change_request(self):
+        """Nothing to implement — hand it back so the usage branch still fires."""
+        from service import split_component_hint
+
+        assert split_component_hint("project/app.py") == ("", "project/app.py")
+
+    def test_an_unpinned_request_is_returned_untouched(self):
+        from service import split_component_hint
+
+        assert split_component_hint("  centre the title  ")[0] == ""
+
+    def test_the_hint_reaches_the_planner_and_the_prefix_slice_is_whitespace_safe(self):
+        """Ends up as `component_hint`, and a leading space does not eat the request."""
+        from channel.identity import Identity
+        from agentlib.session import SessionKey
+        import service
+
+        seen = {}
+
+        def fake_run_change_request(request, **kwargs):
+            seen["request"] = request
+            seen["hint"] = kwargs.get("component_hint")
+            return {"status": "ok", "run_id": "r_test", "changes": [], "notes": ""}
+
+        identity = Identity(session=SessionKey("berat", "t"), known=True,
+                            external_id="1", source="telegram")
+        event = InboundEvent(source="telegram", thread_key="t",
+                             text="  /change project/app.py — centre the title",
+                             external_user_id="1")
+
+        gate = ChannelGate(send=lambda thread, text: None)
+        original = service.run_change_request
+        service.run_change_request = fake_run_change_request
+        try:
+            service.apply_change_request(event, identity, gate,
+                                         model="m", verbose=False)
+        finally:
+            service.run_change_request = original
+
+        assert seen == {"request": "centre the title", "hint": "project/app.py"}
+
+
 class TestSilenceSeam:
     def test_the_service_survives_the_unimplemented_policy(self):
         """T11.2 is not landed yet; the service must degrade loudly, not crash."""
