@@ -28,9 +28,23 @@ with each other, and one engineer's private preference must never surface in ano
 
 ---
 
-## 2. Current state (HW2)
+## 2. Current state (HW3)
+
+HW3 puts a surface in front of the HW2 pipeline. Everything below the dashed line is
+unchanged; what is new is that something other than a person at a terminal can start a run,
+and that a run can correctly end in saying nothing.
 
 ```
+  TELEGRAM ──poll──┐                                  ┌──> reply
+  GITHUB webhook ──┼─> InboundEvent ─> identity ─> QUEUE ─> [ONE worker] ─> silence? ─┤
+  HEARTBEAT ───────┘   (one shape)     (ambient)      │         │                     └──> record
+                                                      │         │                          (say nothing)
+                       admission policy, per path ────┘         │
+                         webhook   -> coalesce                  ├──> question  -> run_agent (read-only tools)
+                         heartbeat -> drop duplicate            └──> /change   -> ORCHESTRATOR (below)
+                         human     -> queue, reject while gated                        │
+                                                                                       │
+ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
                       rules/*.md ──┐ push (every run)
                                    │
 change request ──> ORCHESTRATOR (plain Python — branches on envelope fields, no model)
@@ -52,12 +66,15 @@ change request ──> ORCHESTRATOR (plain Python — branches on envelope field
 store/runs/runs.jsonl  ──(own schedule, separate agent, read-only)──> MONITOR / judge
 ```
 
+In HW3 the gate's `y/n` arrives as another channel message rather than on stdin (decision
+#41), and the monitor's "own schedule" becomes an actual clock (T11.1, Dias).
+
 **Four stores, four jobs:**
 
 ```
 store/knowledge_graph.json   derived     nodes · edges          any scan regenerates it
 store/radf.db                authored    decisions · runs ·     no scan may touch it
-                                         run_scratch
+                                         run_scratch · silences
 store/memory.json            authored    free-form facts+rules  cue-retrieved
 rules/*.md                   authored    operating rules        edited by hand, pushed every run
 ```
@@ -247,9 +264,13 @@ decisions(decision_id PK, symbol_uid, visibility, author_id, decision,
 runs(run_id PK, user_id, thread_id, agent, request, started_at, ended_at, stopped, log_path)
 run_scratch(seq PK, run_id, agent, step, key, value, ts)          -- append-only
 scratch_reads(seq PK, run_id, agent, step, key, saw_seq, ts)      -- incl. misses
+silences(silence_id PK, run_id, trigger, reason_code, evidence,   -- HW3, T9.4
+         visibility, ts)
 ```
 `symbol_uid` is `resolve_uid(component)` — `"Kind:path"`, e.g. `"Module:agentlib.core"`.
-`NULL` means repo-wide. `visibility` is `"team"` or `"user:<id>"`.
+`NULL` means repo-wide. `visibility` is `"team"` or `"user:<id>"` — on `silences` too, and
+there it names who may read the *reason* (decision #44), which for the leak guard is the
+owner of the withheld decision rather than the person who asked.
 
 ### `store/memory.json` — free-form memory (authored)
 <!-- OWNER: Berat -->
@@ -328,6 +349,21 @@ component moved or was removed, so the decision may be stale and should be surfa
 | 38 | 2026-07-27 | monitor.judge | The model **proposes** violations; the **code decides** the verdict. A violation with no `expected`+`observed` is dropped before reporting; the final adherence label is computed from the survivors, not read from the model's self-report | trusting the judge's own verdict and severity | The judge is itself an LLM and hallucinates. An unverifiable verdict is indistinguishable from a hallucination (T7.3a), so it is discarded, not trusted — the same principle as HW1's guards: never take the model's word, require a receipt. Grounding downgrades are trusted only when they carry a rationale, else treated as grounded. |
 | 39 | 2026-07-27 | monitor.judge | "The agent ignored a rule" and "the rule was never in its context" are **split by the code** using `assembled.instructions`: a cited rule absent from the pushed prompt is an **assembler gap**, never a model adherence violation (T7.3c) | reporting every unmet rule as a model failure | The two have different fixes — one is the model, the other is the context assembler. Conflating them sends the fix to the wrong owner. `rule_in_context` checks the rule id (and a quoted snippet) against the full pushed prompt; only in-context violations count toward `prompt_adherence`, gaps are surfaced separately. This is why the run log carries `assembled.instructions` in full (runlog.py). |
 | 40 | 2026-07-27 | monitor.judge | The monitor is **read-only and isolated**: a separate job on its own clock, over `runs.jsonl`, with no tools, no live store, and no way to affect the run it grades | a verification step inside `run_agent`, or a judge with store access | A judge that can act can be steered by the same injection that steers the agent (R4), and a judge inside the loop cannot grade the loop's own stopping decision. Reading only the frozen log record keeps the grade independent and the run replayable. |
+
+
+### HW3 decisions
+
+Numbers **#41–#45** are Phase 9 (Berat); **#46** is reserved for Phase 10 (Alejandro) and
+**#47–#48** for Phase 11 (Dias). Pre-allocated so three parallel branches do not collide in
+this table — the renumbering in T3.4/T8.4 was the lesson.
+
+| # | Date | Component | Decision | Rejected alternative | Why |
+|---|------|-----------|----------|----------------------|-----|
+| 41 | 2026-07-28 | agentlib.approval | The approval gate becomes **asynchronous and in-channel** for the channel path: the answer arrives as another message, only the requester's counts, and a timeout **declines** | keeping `input()` and running the worker synchronously; auto-approving after a wait | This is the one HW2 contract HW3 changes, so it is recorded rather than filed as a refactor. `input()` on a worker thread reads a stdin nobody is attached to and hangs the only worker there is. What *doesn't* change is the whole point: `GATED`, the loop's gate branch, the `(name, args) -> bool` callback shape and `main.py`'s CLI gate are all untouched, so every HW1/HW2 test still exercises the gate it was written against. Only the requester answers, in the thread they were asked in — a shared channel means anybody can type "y", and a bystander must be able to neither approve *nor* cancel someone else's write. Timeout declines because an unanswered gate that eventually proceeds is a delay, not a gate; shutdown declines for the same reason — it is not consent. |
+| 42 | 2026-07-28 | channel.queue | **One worker.** Turns are strictly serialised | a worker pool, or one worker per thread_key | Not a throughput compromise — a correctness constraint. Identity and write scope are ambient `contextvars` (#25): they are what keeps A's private rows away from B and what authorises a write. Concurrent turns would each need their own context, and the failure mode of getting that wrong is not a slow reply, it is B's agent acting as A. One worker makes the race structurally impossible instead of carefully avoided. The cost is real and named in the write-up: throughput is one turn at a time, and a long turn blocks the queue. |
+| 43 | 2026-07-28 | channel.queue | **Per-path admission**, not one uniform strategy: webhook → coalesce, heartbeat → drop the duplicate, human → queue but **reject with a reason** while a gate is open | strict FIFO for everything; coalescing everything; interrupting the in-flight turn | The three paths want different things and one rule would be wrong for at least two. A push's answer is read off the working tree, so only the newest event was ever going to be right — coalescing is correct, and it *costs* per-commit granularity (we can say a decision went stale in this batch, not which commit did it). A queued heartbeat already covers everything outstanding, so the duplicate is dropped rather than coalesced, and that costs nothing — which is why it is a different rule. A human's message is never merged or dropped: discarding a question somebody typed is data loss wearing a policy's clothes. The one exception is while the worker is parked on an approval, where rejecting *with an explanation* costs the human a re-send and buys a bounded, visible wait instead of a message that appears to have been swallowed. Interrupting was rejected outright: it abandons runs mid-way and leaves partial run logs and orphaned gates. |
+| 44 | 2026-07-28 | overlay / channel.silence | **Silence is a first-class recorded outcome** with its own table, its own closed reason-code set, and **its own visibility** | logging it as a run with `stopped="silent"`; not recording it at all | "The agent didn't answer" and "the agent decided not to answer" are the same observation and different events; without a value distinguishing them, a deliberate non-answer is indistinguishable from a crashed worker, and the first person to debug one will "fix" the other. The reason must also be *retrievable* or "silence with a reason recorded" is just silence — hence a table and `inspect_store.py silences`, not a note in a log line. Its own `visibility` column because the most important silence, the private-decision leak guard (T11.2), must be readable by the **owner** of the withheld decision and by nobody else: a silence log everyone could read would announce exactly what the silence was protecting. For the same reason `evidence` records what was *checked* — uids, counts, who asked — never the content withheld. |
+| 45 | 2026-07-28 | channel.identity | The bot has **its own `author_id`** (`bot:radf`), an unmapped sender resolves to the **anonymous identity rather than to itself**, and read-only is enforced by the empty impact set (#25) rather than by prompt | reusing the platform user id as the RADF user id; trusting the display name; a "you may not write" instruction | "Disposable identity" is only half a token question. The other half is in the store: anything the bot authors must be attributable to the bot, not to whoever asked for it. The platform id is trusted *as a lookup key only* — reusing it directly would let the first stranger to message the bot pick their own `user:<scope>`, one collision away from somebody's private rows. Display names are attacker-controlled and carry nothing. And the read-only posture is doubled deliberately: the write tools are absent from the anonymous registry **and** `append_decision_record` independently refuses a falsy author with `no_session`. Two mechanisms, because the second one is a falsy-string coincidence and a coincidence is a bad thing to hang a trust boundary on. |
 
 ---
 
@@ -501,3 +537,111 @@ Path confinement (resolve-then-compare + `DENYLIST`) and impact-set confinement
 (against the ambient `current_impact_set()`, never a parameter) are both in the
 tool, not the prompt (decision #36). A refused write leaves the file
 byte-identical. In `GATED`, so an approved write still passes the human gate.
+
+---
+
+## 8. The channel (HW3)
+
+HW1 and HW2 both began at a prompt somebody typed, which means a human had already decided
+there was something worth doing. The failures worth catching do not arrive that way: a
+decision goes stale when someone moves the file it points at, and a run misbehaves at 3am.
+HW3 adds the surface, the triggers, and the one outcome the earlier homeworks could not
+express — deciding not to answer.
+
+### 8.1 Components
+
+| Component | Owns | Depends on |
+|---|---|---|
+| `channel/base.py` | `InboundEvent`, `OutboundReply`, the `Channel` protocol — one inbound shape for every source | — |
+| `channel/identity.py` | external id → `SessionKey`; the allowlist, the anonymous identity, `BOT_AUTHOR_ID` | `agentlib.session` |
+| `channel/queue.py` | admission policy + the single worker | `channel.base` |
+| `channel/silence.py` | `SilenceDecision`, the closed reason-code set, the `evaluate_silence` **contract** *(body: Dias, T11.2)* | `channel.base`, `agentlib.session` |
+| `channel/telegram.py` | the Telegram transport; long-poll, offset persistence, backoff | `channel.base` |
+| `agentlib/approval.py` | `ChannelGate` — the approval gate with the answer arriving over the channel | — |
+| `service.py` | the long-running process: poll → identity → queue → worker → reply; the two narrow registries | all of the above, `orchestrator`, `overlay` |
+| `triggers/__init__.py` | the shared event shape for Phases 10 and 11 | `channel.base` |
+| `triggers/webhook.py`, `triggers/orphan_watch.py` | GitHub events → orphaned-decision detection *(Alejandro, Phase 10)* | `channel.base`, `tools.decisions` (read-only) |
+| `triggers/heartbeat.py` | the monitor's real clock *(Dias, Phase 11)* | `monitor.judge`, `overlay.db` |
+| `agents/admin.py`, `rules/ADMIN_BOUNDARY.md` | the privileged path and its written boundary *(Dias, T11.3)* | `channel.identity` |
+
+### 8.2 Contracts
+
+**`channel/base.py` — the one inbound shape.**
+```
+InboundEvent(source, thread_key, text, external_user_id, payload, ts, dedupe_key)
+  source ∈ telegram | github | heartbeat
+  external_user_id  None for machine sources — they inherit nobody's session
+  dedupe_key        set ⇒ COALESCABLE. Never set on a human message.
+  .interactive      True iff a human is waiting
+OutboundReply(thread_key, text, silent) · OutboundReply.quiet(thread_key)
+```
+Everything on an event is untrusted, including fields that look structural. `external_user_id`
+is the only field with any standing and it is used as a lookup key, never as an identity.
+
+**`channel/identity.py` — who the runtime says is asking.**
+```
+resolve(event) -> Identity{session, known, is_admin, external_id, source}
+  .can_write   == known.  An unmapped sender reads team rows and writes nothing.
+BOT_AUTHOR_ID = "bot:radf"
+allowlist()  <- RADF_CHANNEL_USERS   "telegram:<id>=<radf_user>,..."
+admins()     <- RADF_CHANNEL_ADMINS
+```
+An unmapped platform id resolves to `SessionKey(user_id="")`, not to itself, so the first
+stranger to message the bot cannot pick their own visibility scope.
+
+**`channel/queue.py` — admission, and only admission.**
+```
+WorkQueue(gate=None, maxsize=256)
+  .submit(event, *, user_id) -> Admission{disposition, reason, accepted}
+    disposition ∈ queued | coalesced | dropped | rejected | gate_reply
+  .take(timeout) · .close() · .pending_sources()
+Worker(queue, handler, on_error=None)
+  .start() / .run() / .stop() / .drain()   drain() = same policy, no thread
+```
+
+**`channel/silence.py` — the recorded non-answer.**
+```
+SilenceDecision{silent, reason_code, evidence, visibility}
+  reason_code ∈ heartbeat_clean | private_decision_leak |
+                no_decisions_touched | injection_attempt
+evaluate_silence(event, session, candidates) -> SilenceDecision   # T11.2, Dias
+```
+`candidates` is the **unfiltered** decision set, from `overlay.db.decisions_across_scopes` —
+the only cross-scope read in the system. Those rows die on that stack frame: the function
+returns a decision, never text. `evidence` records what was *checked*, never what was withheld.
+
+**`agentlib/approval.py` — the gate, off stdin.**
+```
+ChannelGate(send, timeout=180)
+  .callback_for(user_id, thread_key) -> approve(name, args) -> bool   # run_agent's shape
+  .submit_answer(*, user_id, thread_key, text) -> bool  # True == consumed, not a request
+  .pending -> PendingApproval | None    .cancel()  # shutdown declines
+```
+Only the requester's answer counts, in the thread they were asked in. Only `AFFIRMATIVE`
+approves; everything else, including a timeout and including shutdown, declines.
+
+**`service.py` — the process.**
+```
+python service.py                 # listen on Telegram
+python service.py --dry-run       # queue policy, no network, no model
+build_channel_registry(can_write) -> (schemas, registry)
+  read-only : query_component_graph, retrieve_decisions, retrieve_memory,
+              verify_graph_integrity
+  +can_write: append_decision_record, save_memory
+```
+Both registries are built from explicit lists, never by filtering the full registry — a
+filter is one bug away from being a full registry. No `GATED` tool appears in either; writes
+go through `/change`, which runs the HW2 orchestrator with the gate wired to the channel.
+
+### 8.3 `store/radf.db` — the `silences` table
+
+```sql
+silences(silence_id PK, run_id, trigger, reason_code, evidence, visibility, ts)
+```
+Read with `query_silences(conn, user_id, reason_code=None, limit=50)`, filtered through the
+same `visible_to` fragment as decisions. It carries its own `visibility` because the most
+important silence — the private-decision leak guard — must be readable by the *owner* of the
+withheld decision and by nobody else. A silence log everyone could read would announce
+exactly what the silence was protecting.
+
+Inspect with `python inspect_store.py silences [--user <id>]`.

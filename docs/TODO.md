@@ -20,15 +20,20 @@ PR into `main` · no direct pushes.
 
 | You are | Your next task | Blocked by | Read first |
 |---|---|---|---|
-| **Berat** | **T9.0** the `channel/` stubs — merge it alone, it is what unblocks the other two | **nothing** | this file, then §Contracts (HW3) |
-| **Alejandro** | **T10.1** `triggers/webhook.py` | T9.0 (stubs only, not T9.1–T9.8) | §Contracts (`InboundEvent`), `tools/decisions.py::verify_graph_integrity` (read-only) |
-| **Dias** | **T11.1** `triggers/heartbeat.py`, then **T11.2** the silence policy | T9.0 stubs; T11.2 also needs T9.4 | §Contracts (`InboundEvent`, `SilenceDecision`), `monitor/judge.py` |
+| **Berat** | *(Phase 9 done and under test — reviewing Phase 10/11 PRs, then live runs)* | **nothing** | this file, then §Contracts (HW3) |
+| **Alejandro** | **T10.1** `triggers/webhook.py` | **nothing — Phase 9 has landed** | §Contracts (`InboundEvent`), `tools/decisions.py::verify_graph_integrity` (read-only) |
+| **Dias** | **T11.1** `triggers/heartbeat.py`, then **T11.2** the silence policy | **nothing — Phase 9 has landed** | §Contracts (`InboundEvent`, `SilenceDecision`), `monitor/judge.py` |
 
-**HW3 serialises exactly once, at the start.** Phase 9 is the foundation and is entirely Berat's,
-so its first task is stubs-only on purpose: real dataclasses, real signatures, real docstrings,
-`NotImplementedError` bodies — the same move that unblocked everyone in T0.8 and T6.1. Once T9.0
-merges, Phases 10 and 11 run in parallel with the rest of Phase 9 and with each other. They share
-no file.
+**HW3 serialised exactly once, at the start, and that point has passed.** Phase 9 is built and
+under test (`tests/test_channel.py`, 70 tests). Both remaining phases are unblocked and share no
+file with each other.
+
+Two things Phase 9 left deliberately for its owner to finish:
+- `channel/silence.py::evaluate_silence` still raises `NotImplementedError`. `service.py` calls
+  it, catches that, warns once, and answers normally — so **the leak guard is not active until
+  T11.2 lands.** The seam is real and tested; the policy is not written.
+- `monitor/judge.py` still has no clock. `python -m monitor.judge` remains the only way to run it
+  until T11.1.
 
 Nobody edits `agentlib/context.py`, `overlay/*` (beyond T9.4, Berat's own), or `tools/decisions.py`
 in HW3 without asking: they are load-bearing for all three tracks and are already under test.
@@ -656,12 +661,12 @@ every HW1/HW2 test keeps passing. Recorded as decision #41, not filed as a refac
 Stubs only: dataclasses fully written, functions raising `NotImplementedError` with real
 docstrings. Same move as T0.8 and T6.1 — it is the whole reason HW3 serialises only once.
 
-- [ ] **T9.0a** `channel/base.py` — `InboundEvent`, `OutboundReply{thread_key, text, silent}`,
+- [x] **T9.0a** `channel/base.py` — `InboundEvent`, `OutboundReply{thread_key, text, silent}`,
       and `class Channel(Protocol)` with `poll() -> Iterator[InboundEvent]` and
       `send(reply) -> None`. Shapes are frozen above.
-- [ ] **T9.0b** `channel/silence.py` — `SilenceDecision` **and the `evaluate_silence` signature
+- [x] **T9.0b** `channel/silence.py` — `SilenceDecision` **and the `evaluate_silence` signature
       only**. The body is Dias's T11.2. Write the docstring properly: it is the contract.
-- [ ] **T9.0c** `triggers/__init__.py` — re-export `InboundEvent` so Phases 10 and 11 import one
+- [x] **T9.0c** `triggers/__init__.py` — re-export `InboundEvent` so Phases 10 and 11 import one
       name. No trigger registry unless one is earned; a trigger constructing an `InboundEvent`
       directly is simpler and there are only three of them.
 
@@ -669,72 +674,72 @@ docstrings. Same move as T0.8 and T6.1 — it is the whole reason HW3 serialises
 
 ### T9.1 — Telegram client
 
-- [ ] `channel/telegram.py` — `urllib.request` long-poll on `getUpdates` with persisted `offset`,
+- [x] `channel/telegram.py` — `urllib.request` long-poll on `getUpdates` with persisted `offset`,
       `sendMessage` to reply. Token from `TELEGRAM_BOT_TOKEN` (add to `.env.example`; the real
       one is never committed — CLAUDE.md §2).
-- [ ] Network failure is a **branch, not a crash** — back off and continue, the same discipline as
+- [x] Network failure is a **branch, not a crash** — back off and continue, the same discipline as
       §5's "a tool failure gets its own branch." A channel that dies on one 502 is not a channel.
-- [ ] Every field of an update is untrusted input, including the display name. It reaches
+- [x] Every field of an update is untrusted input, including the display name. It reaches
       `input[]` as quoted data, never `instructions` (#26).
 
 ### T9.2 — Identity bridge
 
-- [ ] `channel/identity.py` — maps `external_user_id` → `SessionKey(user_id, thread_id)` from an
+- [x] `channel/identity.py` — maps `external_user_id` → `SessionKey(user_id, thread_id)` from an
       allowlist in `.env`. An **unmapped** id gets a low-trust anonymous identity that sees
       team-visible rows only, which is what `current_user() is None` already yields — no new
       code path, just a named one.
-- [ ] `BOT_AUTHOR_ID = "bot:radf"`. Anything the bot authors is attributable to the bot, never to
+- [x] `BOT_AUTHOR_ID = "bot:radf"`. Anything the bot authors is attributable to the bot, never to
       the person who asked for it. This is the half of "disposable identity" that lives in the
       store rather than in the token.
-- [ ] The admin allowlist lives here too; Dias's T11.3 consumes it. This module performs no
+- [x] The admin allowlist lives here too; Dias's T11.3 consumes it. This module performs no
       writes and calls no tools — it decides who someone is, nothing more.
 
 ### T9.3 — Queue and worker
 
-- [ ] `channel/queue.py` — one worker thread, `collections.deque` FIFO, policy **per path**:
+- [x] `channel/queue.py` — one worker thread, `collections.deque` FIFO, policy **per path**:
       **webhook → coalesce** (events sharing a `dedupe_key` collapse to the newest waiting one);
       **human → queue**, except while the in-flight turn is parked on a gated approval, where the
       new message is **rejected with a reason** ("waiting on approval for `apply_change` on X");
       **heartbeat → drop** if one is already queued.
-- [ ] Write down why it is one worker: `session_scope` and `impact_scope` are `contextvars`, so
+- [x] Write down why it is one worker: `session_scope` and `impact_scope` are `contextvars`, so
       two concurrent turns for different users would race ambient identity — and ambient identity
       is the mechanism that keeps A's private rows away from B (#25, T4.5). A worker pool would
       trade a correctness property for throughput this system does not need.
 
 ### T9.4 — Silences store
 
-- [ ] `overlay/db.py` — the `silences` table (DDL frozen above), `record_silence(...)`, and
+- [x] `overlay/db.py` — the `silences` table (DDL frozen above), `record_silence(...)`, and
       `query_silences(conn, user_id, limit)` filtered through the existing `visible_to(user_id)`
       fragment. **In the query, never after** (#24).
-- [ ] `inspect_store.py` — a `silences` subcommand beside `decisions|memory|runs|trace`.
+- [x] `inspect_store.py` — a `silences` subcommand beside `decisions|memory|runs|trace`.
       "Silence with a reason recorded is a correct outcome" only holds if the reason is
       retrievable; an unqueryable log is a deleted one with extra steps.
 
 ### T9.5 — Asynchronous approval gate
 
-- [ ] `agentlib/approval.py` — posts the proposed `apply_change` (path, `before_sha`, size delta,
+- [x] `agentlib/approval.py` — posts the proposed `apply_change` (path, `before_sha`, size delta,
       intent) into the channel and parks the run until the **requesting** user answers. Nobody
       else's `y` counts.
-- [ ] **Timeout is a `declined`, not an approval.** An unanswered gate that eventually writes is
+- [x] **Timeout is a `declined`, not an approval.** An unanswered gate that eventually writes is
       not a gate.
-- [ ] Channel path only. `main.py`'s `approve_via_input` and `GATED` in `agentlib/guards.py` are
+- [x] Channel path only. `main.py`'s `approve_via_input` and `GATED` in `agentlib/guards.py` are
       **unchanged**, so the whole HW1/HW2 suite keeps passing untouched.
 
 ### T9.6 — Service entry point
 
-- [ ] `service.py` — poll → queue → worker → `run_change_request(...)` or the read-only answer
+- [x] `service.py` — poll → queue → worker → `run_change_request(...)` or the read-only answer
       path, all inside `session_scope(...)` established by T9.2. `argparse` main matching the four
       existing entry points; graceful shutdown; the run log flushes on **every** exit path,
       silence included.
-- [ ] A `--dry-run` mode driven by a scripted channel, so the queue is testable without a network.
-- [ ] This is also the cheapest way to finally close **T8.3**: both `apply_change` gate branches
+- [x] A `--dry-run` mode driven by a scripted channel, so the queue is testable without a network.
+- [x] This is also the cheapest way to finally close **T8.3**: both `apply_change` gate branches
       are easier to demo in a chat thread than over stdin.
 
 ### T9.7 — Docs
 
-- [ ] `docs/ARCHITECTURE.md` — component entries and contracts for `channel/`, `triggers/`,
+- [x] `docs/ARCHITECTURE.md` — component entries and contracts for `channel/`, `triggers/`,
       `agentlib/approval.py`, `service.py`, and the `silences` table in §4.
-- [ ] Decision records **#41–#45**. Numbers are **reserved now** so three parallel branches do not
+- [x] Decision records **#41–#45**. Numbers are **reserved now** so three parallel branches do not
       collide in one file — #46 is Alejandro's, #47–#48 are Dias's, and each owner writes their
       own (the T8.4 rule).
       **#41** the gate goes asynchronous and in-channel; timeout means declined. Rejected: keeping
@@ -748,10 +753,10 @@ docstrings. Same move as T0.8 and T6.1 — it is the whole reason HW3 serialises
 
 ### T9.8 — Tests
 
-- [ ] `tests/test_channel.py` — queue policies (coalesce, reject-while-gated, drop-duplicate
+- [x] `tests/test_channel.py` — queue policies (coalesce, reject-while-gated, drop-duplicate
       heartbeat, FIFO order); identity mapping including the unmapped-id path; silences round-trip
       and **visibility filtering**; the async gate approving, declining, and timing out.
-- [ ] No API calls. Reuse the `scripted_call` pattern from `tests/test_smoke_hw1.py` and the
+- [x] No API calls. Reuse the `scripted_call` pattern from `tests/test_smoke_hw1.py` and the
       autouse `isolate_stores` fixture in `tests/conftest.py` — it already redirects all four
       stores, so the new table is covered by `RADF_DB_PATH` for free.
 
