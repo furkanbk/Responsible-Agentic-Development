@@ -422,9 +422,14 @@ class TestSilenceStore:
 class TestSilenceContract:
     """The stub is a contract (T11.2 is Dias's). These pin the shape, not the body."""
 
-    def test_evaluate_silence_is_still_a_stub(self):
-        with pytest.raises(NotImplementedError):
-            evaluate_silence(tg(), resolve(tg()).session, [])
+    def test_evaluate_silence_speaks_when_there_is_nothing_to_withhold(self):
+        # T11.2 has landed (Dias): the stub is implemented. The class guard
+        # "still a stub" is retired here as the intended handoff. With no
+        # candidate decisions there is nothing private to hide, so the ordinary
+        # outcome is to answer. The full leak-guard behaviour is covered in
+        # tests/test_silence.py.
+        out = evaluate_silence(tg(), resolve(tg()).session, [])
+        assert out.silent is False
 
     def test_speak_is_the_ordinary_outcome(self):
         assert SilenceDecision.speak().silent is False

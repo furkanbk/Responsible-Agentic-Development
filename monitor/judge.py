@@ -278,6 +278,8 @@ def report(verdicts: list[Verdict]) -> str:
 
 def _main() -> int:
     """Run the monitor over the whole log on its own — the 'separate job'."""
+    from dotenv import load_dotenv  # the CLI entry point needs the key, like main.py
+    load_dotenv()
     runs = read_runs()
     if not runs:
         print("no runs to grade (store/runs/runs.jsonl is empty)")

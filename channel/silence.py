@@ -125,9 +125,51 @@ def evaluate_silence(
     `REASON_PRIVATE_DECISION`, `visibility` set to the owner's scope, and
     `evidence` naming only uids and counts.
     """
-    raise NotImplementedError(
-        "channel.silence.evaluate_silence is T11.2 (Dias). "
-        "The signature and SilenceDecision are frozen — see the module docstring."
+    # No relevant decisions at all -> nothing is being withheld. Answer.
+    if not candidates:
+        return SilenceDecision.speak()
+
+    asker = session.user_id  # "" for the anonymous/system identity
+
+    # Replicate the visibility rule (overlay.db.visible_to) here rather than
+    # trusting the model with the rows: a row is visible to the asker iff it is
+    # team-wide, or private to the asker themselves (decision #24). This is the
+    # filtered side of the comparison, computed from the same rows.
+    def _visible_to_asker(row: dict[str, Any]) -> bool:
+        vis = str(row.get("visibility") or "")
+        if vis == TEAM:
+            return True
+        return bool(asker) and vis == f"user:{asker}"
+
+    # If the asker can see even one relevant decision, there is nothing to hide
+    # from them — including the owner asking about their own private decision.
+    if any(_visible_to_asker(row) for row in candidates):
+        return SilenceDecision.speak()
+
+    # The asker sees NONE, yet rows exist. Silence only when every one is private
+    # to someone else; if any row is unclassifiable, do not guess — answer.
+    owners = {str(row.get("visibility") or "") for row in candidates}
+    if not all(o.startswith("user:") for o in owners):
+        return SilenceDecision.speak()
+
+    # This is the leak-guard case: the visibility-filtered view is empty while the
+    # unfiltered view is not, and everything in it belongs to another user.
+    uids = sorted({str(row.get("symbol_uid") or "") for row in candidates})
+    # Record who owns the withheld knowledge so THAT user (and nobody else) can
+    # later see that someone went looking. If several owners, the record is
+    # scoped to one of them; each still learns only that a lookup happened.
+    owner_scope = sorted(owners)[0]
+    evidence = (
+        f"asker={asker or 'anonymous'} could see 0 of {len(candidates)} "
+        f"decision(s) on {','.join(uids) or '(no uid)'}; all private to another "
+        f"user. Withheld to avoid disclosing existence/ownership."
+    )
+    # `evidence` names uids, counts and the asker only — never the decision text.
+    return SilenceDecision(
+        silent=True,
+        reason_code=REASON_PRIVATE_DECISION,
+        evidence=evidence,
+        visibility=owner_scope,
     )
 
 
