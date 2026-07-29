@@ -21,7 +21,7 @@ PR into `main` · no direct pushes.
 | You are | Your next task | Blocked by | Read first |
 |---|---|---|---|
 | **Berat** | *(Phase 9 done and under test — reviewing Phase 10/11 PRs, then live runs)* | **nothing** | this file, then §Contracts (HW3) |
-| **Alejandro** | **T10.1** `triggers/webhook.py` | **nothing — Phase 9 has landed** | §Contracts (`InboundEvent`), `tools/decisions.py::verify_graph_integrity` (read-only) |
+| **Alejandro** | *(Phase 10 done — webhook + orphan watch merged, under test)* | — | §Contracts (`InboundEvent`), `tools/decisions.py::verify_graph_integrity` (read-only) |
 | **Dias** | **T11.1** `triggers/heartbeat.py`, then **T11.2** the silence policy | **nothing — Phase 9 has landed** | §Contracts (`InboundEvent`, `SilenceDecision`), `monitor/judge.py` |
 
 **HW3 serialised exactly once, at the start, and that point has passed.** Phase 9 is built and
@@ -767,28 +767,30 @@ docstrings. Same move as T0.8 and T6.1 — it is the whole reason HW3 serialises
 The structural read path you have owned since HW1, now with an external clock. Touches no file in
 Phase 9 or 11.
 
-- [ ] **T10.1** `triggers/webhook.py` — `http.server.ThreadingHTTPServer`, one route. Verify
-      `X-Hub-Signature-256` with `hmac.compare_digest` against `GITHUB_WEBHOOK_SECRET`; an
-      unverified request is dropped and logged, never processed. Parse `push` / `pull_request`
-      into `InboundEvent(source="github", dedupe_key=f"push:{branch}")`.
-- [ ] **T10.1a** The receiver **only enqueues**. It never scans and never calls an agent inline —
-      otherwise an unauthenticated sender picks how much work the box does, and the HTTP thread
-      becomes a second place ambient identity could be set.
-- [ ] **T10.2** `triggers/orphan_watch.py` — on a github event: re-scan via
-      `scan_repository_structure`, then call the existing
-      `tools/decisions.py::verify_graph_integrity(scope="all")` — **read-only, do not edit that
-      file** (it is Berat's for HW2/HW3). Diff against the previous orphan set, persisted as a
-      watermark under `store/`.
-- [ ] **T10.2a** A newly-orphaned decision becomes one outbound message naming the decision, its
-      now-unresolvable `symbol_uid`, and the commit range. **Surfaced for review, never deleted**
-      (CLAUDE.md §6) — the component probably moved, which is the whole point of the signal.
-- [ ] **T10.3** Silence: a push touching only paths no decision references produces
-      `SilenceDecision(reason_code="no_decisions_touched", visibility="team")` via
-      `record_silence`. Secondary branch; the primary one is T11.2.
-- [ ] **T10.4** Decision **#46** — the webhook verifies then enqueues, and all work happens on the
-      worker. `tests/test_webhook.py`: signature accept and reject, `dedupe_key` shape,
-      orphan diff emits exactly one message for one orphan, irrelevant push records a silence and
-      sends nothing. Payload fixtures under `tests/fixtures/`.
+- [x] **T10.1** `triggers/webhook.py` — `ThreadingHTTPServer`, one `do_POST`. `verify_signature`
+      HMAC-checks `X-Hub-Signature-256` with `hmac.compare_digest` against `GITHUB_WEBHOOK_SECRET`
+      (empty secret rejects everything); an unverified request is `401`, logged, never parsed.
+      `parse_event` turns `push` / `pull_request` into
+      `InboundEvent(source="github", dedupe_key=f"push:{branch}" | f"pr:{n}")`; other types → `None`.
+- [x] **T10.1a** The receiver **only enqueues** — `do_POST` calls the injected `enqueue` and
+      returns `202`. It never scans, never opens a store, never calls an agent. The rescan runs on
+      the single worker (`triggers.orphan_watch`), routed from `service.handle()` on `source=="github"`.
+- [x] **T10.2** `triggers/orphan_watch.py::handle_github_event` — on a github event: re-scan via
+      `scan_repository_structure`, then call `verify_graph_integrity(scope="all")` **read-only**.
+      `_orphan_uids` parses its report; the set is diffed against a watermark persisted under
+      `store/` (`RADF_ORPHAN_WATERMARK`, default beside the graph).
+- [x] **T10.2a** A newly-orphaned decision becomes one outbound message naming its
+      now-unresolvable `symbol_uid` and the commit range — **and nothing else** (no decision text
+      or author; a private decision's existence is content, #24/#44). Surfaced, never deleted (§6).
+- [x] **T10.3** Silence: no newly-orphaned decision → `record_silence(reason_code=
+      "no_decisions_touched", visibility="team")`, sends nothing; `evidence` is counts only. A
+      refused rescan takes the same branch. Secondary silence branch; the primary is T11.2.
+- [x] **T10.4** Decision **#46** written. `tests/test_webhook.py` (16): signature accept/reject
+      (incl. empty-secret and wrong-algorithm), `dedupe_key` shape, unsupported event → `None`,
+      orphan diff emits exactly one message per orphan and leaks no text, second pass silent via
+      watermark, irrelevant push records a silence and sends nothing. Fixtures `gh_*.json`.
+      *(Sanctioned 4-line dispatch added to `service.py::handle()` + `.env.example` vars — flagged
+      for Berat in the PR, per the guards.py precedent.)*
 
 **Depends on:** T9.0 only. Not on the Telegram client, the queue, or anything of Dias's.
 

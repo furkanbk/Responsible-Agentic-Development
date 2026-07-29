@@ -1,0 +1,15 @@
+{
+  "ref": "refs/heads/main",
+  "before": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "compare": "https://github.com/org/repo/compare/aaaaaaa...bbbbbbb",
+  "commits": [
+    {
+      "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "message": "move gone.py, tweak a.py, add new.py",
+      "added": ["pkg/new.py"],
+      "modified": ["pkg/a.py"],
+      "removed": ["pkg/gone.py"]
+    }
+  ]
+}
