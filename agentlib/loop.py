@@ -1,9 +1,12 @@
 """agentlib.loop — run_agent(): the observe -> reason -> act -> verify loop.
 
-This is the Part A `run_agent` (A5), grown into the Part B safe loop (B1-B4):
-the same round trip, now with the guards from guards.py wired into their own
-branches, a human approval gate on irreversible tools, an error branch for
-tool-returned errors, and a trace.
+HW4 (decision #49): internals are now a compiled LangGraph graph
+(`agentlib/graph.py`), built over an explicit `AgentState` schema
+(`agentlib/graph_state.py`) with LangChain-integrated tools
+(`agentlib/langchain_tools.py`). `run_agent`'s signature and return shape are
+**frozen unchanged** from the pre-refactor loop, on purpose: `agents/executor.py`,
+`agents/admin.py`, `service.py`, and `main.py` all import this function and none
+of them changed for this refactor.
 
 Stopping conditions — all the CODE's decision, never the model's (CLAUDE.md §5):
   answered    the model made no tool call and returned text
@@ -15,26 +18,22 @@ Stopping conditions — all the CODE's decision, never the model's (CLAUDE.md §
 Returns: {"answer", "steps", "trace", "stopped"} (ARCHITECTURE.md §3).
 
 The loop never trusts tool output as instructions — a result is wrapped as data
-(`{"result": ...}`) before it re-enters context (CLAUDE.md §5, Part B B3).
+(`{"result": ...}`) before it re-enters context (CLAUDE.md §5, Part B B3). That
+wrapping now happens in `agentlib/graph.py`'s tools node; the guards it calls
+(`agentlib/guards.py`) are unchanged.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any, Callable, Optional
 
-from .context import AssembledContext
-from .core import CHEAP, call
-from .runlog import RunLog
-from .guards import (
-    call_signature,
-    check_output,
-    detect_stall,
-    is_error_result,
-    requires_approval,
-    validate_args,
-)
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
+from .context import AssembledContext
+from .core import CHEAP
+from .graph import build_graph
+from .langchain_tools import build_langchain_tools
+from .runlog import RunLog
 
 # Standing instructions sent every turn. This steers the model to ACT through
 # tools instead of self-gating in prose: the model kept writing "please confirm"
@@ -99,9 +98,9 @@ def run_agent(
     """
     if context is not None:
         system = context.instructions
-        messages: list[dict[str, Any]] = list(context.input_items(user_msg))
+        input_items = list(context.input_items(user_msg))
     else:
-        messages = [{"role": "user", "content": user_msg}]
+        input_items = [{"role": "user", "content": user_msg}]
 
     if run_log is not None:
         run_log.request = run_log.request or user_msg
@@ -112,99 +111,39 @@ def run_agent(
         elif system:
             run_log.instructions = system
 
+    messages: list[BaseMessage] = []
+    if system:
+        messages.append(SystemMessage(content=system))
+    messages.extend(HumanMessage(content=item["content"]) for item in input_items)
+
     schema_by_name = {s["name"]: s for s in schemas}
-    trace: list[dict[str, Any]] = []
-    signatures: list[str] = []
-    declined_signatures: set[str] = set()
-    step = 0
+    tools = build_langchain_tools(list(registry.values()))
 
     if verbose:
         print(f"  [TOOLS] offered: {[s['name'] for s in schemas]}")
 
-    while True:
-        # --- observe / reason: ask the model ---------------------------------
-        if verbose:
-            print(f"  [OBSERVE] step {step + 1}: {len(messages)} message(s) in context")
-        r = call(messages=messages, model=model, tools=schemas, system=system)
-        if verbose:
-            reasoned = r.text.strip() if r.text else ""
-            wants = [tc["name"] for tc in r.tool_calls] or ["<none>"]
-            print(f"  [REASON] wants={wants}" + (f" say={reasoned[:160]!r}" if reasoned else ""))
+    graph = build_graph(tools, schema_by_name, registry, approve, model, max_steps)
+    initial_state = {
+        "messages": messages,
+        "trace": [],
+        "signatures": [],
+        "declined_signatures": [],
+        "step": 0,
+        "stopped": None,
+        "answer": None,
+    }
+    final_state = graph.invoke(initial_state)
 
-        # VERIFY the model's OWN output: truncated text is not a finished result.
-        tag, _ = check_output(r)
-        if tag == "ERROR_BRANCH":
-            if verbose:
-                print("  [TRUNCATED] model output hit the token cap — not an answer")
-            return _stop("truncated", None, step, trace, run_log)
+    if verbose:
+        print(f"  [STOPPED] {final_state['stopped']} after {final_state['step']} step(s)")
 
-        # No tool call -> the model chose to answer. Done.
-        if not r.tool_calls:
-            return _stop("answered", r.text, step, trace, run_log)
-
-        # --- act: append the model's tool-call items, then dispatch each -----
-        messages += r.output_items
-        for tc in r.tool_calls:
-            name, args, call_id = tc["name"], tc["arguments"], tc["call_id"]
-            sig = call_signature(name, args)
-            signatures.append(sig)
-
-            # Stall guard: an identical call we've already made this run.
-            if detect_stall(signatures):
-                # If the repeated call is one the user declined, report it as a
-                # decline (the model is re-issuing a blocked action), else stall.
-                reason = "declined" if sig in declined_signatures else "stalled"
-                if verbose:
-                    print(f"  [{reason.upper()}] repeated call {name}({args})")
-                return _stop(reason, None, step, trace, run_log)
-
-            schema = schema_by_name.get(name)
-
-            # Branch A: unknown tool or invalid args — error branch, not execution.
-            if schema is None:
-                out, branch = {"error": "unknown_tool", "tool": name}, "invalid_args"
-            elif (errs := validate_args(schema, args)):
-                out = {"error": "invalid_args", "tool": name, "details": errs}
-                branch = "invalid_args"
-                if verbose:
-                    print(f"  [INVALID ARGS] {name}({args}) -> {errs}")
-
-            # Branch B: gated (irreversible) tool — require explicit approval.
-            elif requires_approval(name):
-                if verbose:
-                    print(f"  [GATE] irreversible {name}({args}) — pausing for human approval")
-                if approve is not None and approve(name, args):
-                    out = registry[name](**args)
-                    branch = "error" if is_error_result(out) else "ok"
-                    if verbose:
-                        print(f"  [GATE] approved -> {out}")
-                else:
-                    out = {"declined_by_user": True, "tool": name}
-                    branch = "declined"
-                    declined_signatures.add(sig)
-                    if verbose:
-                        print("  [GATE] declined -> returning 'declined' result to the model")
-
-            # Branch C: reversible tool — run it straight through.
-            else:
-                out = registry[name](**args)
-                # Error branch (B2): an honest structured error, surfaced as such.
-                branch = "error" if is_error_result(out) else "ok"
-                if verbose:
-                    marker = "[ERROR BRANCH] " if branch == "error" else ""
-                    print(f"  step {step + 1}: {marker}{name}({args}) -> {out}")
-
-            trace.append({"tool": name, "args": args, "output": out, "branch": branch})
-            # Tool output re-enters context as DATA, never as instructions.
-            messages.append({
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": json.dumps({"result": out}, default=str),
-            })
-
-        step += 1
-        if step >= max_steps:
-            return _stop("max_steps", None, step, trace, run_log)
+    return _stop(
+        final_state["stopped"],
+        final_state["answer"],
+        final_state["step"],
+        final_state["trace"],
+        run_log,
+    )
 
 
 def _stop(stopped: str, answer: Optional[str], steps: int,

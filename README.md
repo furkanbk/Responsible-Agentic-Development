@@ -123,8 +123,14 @@ about a module, and the constraint arrived with it.
 ### Tests
 
 ```bash
-python -m pytest tests/ -v      # 127 tests, no API calls
+python -m pytest -m "not online"   # everything except the framework's live-call tests
+python -m pytest                   # + the online tests (needs OPENCODE_API_KEY), one per HW4 suite
 ```
+
+HW4 suites carry at least one `@pytest.mark.online` test that makes a real call through
+LangGraph/LangChain against the Zen endpoint — see CLAUDE.md §8 for why a fully-mocked suite
+can't catch a framework-wiring bug (a tool schema that never reaches the model, a dropped
+state field, a routing edge that never fires).
 
 ### Look inside the stores
 
@@ -282,6 +288,89 @@ Three things keep it traceable:
 
 ---
 
+## Architecture diagrams
+
+### Agent / tool graph
+
+As of HW4, the single agent's inner loop (what the planner, the executor and the admin
+subagent each drive through `agentlib.loop.run_agent`) is a compiled LangGraph graph, not a
+hand-rolled `while` loop. Everything outside the dashed box is unchanged from HW1-HW3 — the
+refactor is internal to `run_agent` (decision #49).
+
+```mermaid
+flowchart TB
+    subgraph callers["Callers of run_agent (unchanged)"]
+        main["main.py CLI"]
+        executor["agents/executor.py"]
+        admin["agents/admin.py"]
+        service["service.py (Telegram / webhook / heartbeat)"]
+    end
+
+    subgraph loop["agentlib.loop.run_agent (HW4: internals below)"]
+        direction TB
+        subgraph g["agentlib/graph.py — compiled LangGraph"]
+            direction TB
+            A["agent node\nChatOpenAI.bind_tools(...)"]
+            T["tools node\nvalidate_args / requires_approval /\nis_error_result / detect_stall (guards.py)"]
+            A -->|"tool_calls"| T
+            T -->|"no stop condition"| A
+        end
+    end
+
+    subgraph tools["Tools, wrapped once via agentlib.langchain_tools.to_langchain_tool"]
+        rq["query_component_graph\nretrieve_decisions / retrieve_memory"]
+        rw["append_decision_record\nsave_memory"]
+        gated["apply_change\nprune_graph_node  (GATED)"]
+        calc["evaluate_expression\n(HW4 reference tool)"]
+    end
+
+    callers --> loop
+    A -. "bound tools" .-> tools
+    T -->|"registry[name](**args)"| tools
+    A -->|"stopped: answered / truncated"| out(("answer + trace"))
+    T -->|"stopped: max_steps / stalled / declined"| out
+```
+
+### Sequence: a gated write through the two-agent pipeline
+
+One representative use case — a change request that needs a file write, which is the one
+irreversible action in the system and therefore the one that must pause for a human.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant O as orchestrator.py (plain Python)
+    participant P as Planner agent
+    participant E as Executor agent
+    participant Loop as run_agent (LangGraph)
+    participant Tool as apply_change (GATED)
+    participant H as Human approver
+
+    U->>O: change request + component
+    O->>P: run_agent(planner tools)
+    P->>Loop: reason over query_component_graph, retrieve_decisions
+    Loop-->>P: impact set, constraints, open_questions=[]
+    P-->>O: AgentResult(status=ok)
+    O->>O: write plan to run_scratch (impact_scope set)
+    O->>E: run_agent(narrow executor tools + brief)
+    E->>Loop: reason -> decides to call apply_change
+    Loop->>Tool: apply_change(path, new_content)
+    Note over Tool: GATED — path + impact-set confined (decision #36)
+    Tool->>H: pause, request approval
+    H-->>Tool: approve / decline
+    alt approved
+        Tool-->>Loop: {"result": "ok", ...}  branch=ok
+        Loop-->>E: stopped=answered
+    else declined
+        Tool-->>Loop: {"declined_by_user": true}  branch=declined
+        Loop-->>E: stopped=declined (or re-issue -> declined)
+    end
+    E-->>O: AgentResult(status=ok|blocked)
+    O-->>U: result
+```
+
+---
+
 ## The monitor
 
 A separate job with a separate agent, on its own schedule, reading `store/runs/runs.jsonl` only —
@@ -368,6 +457,13 @@ inspect_store.py       read the stores: decisions, memory, runs, per-run trace
 | `verify_graph_integrity` | domain check, returns structured error | `scope` enum | yes | no |
 | `apply_change` | **writes a file** | `intent` enum | **no** | **yes** |
 | `prune_graph_node` | permanently deletes a node | `cascade` enum | **no** | **yes** |
+| `evaluate_expression` | safe arithmetic calculator, no file/network access | expression-grammar validated (rejects anything but `+ - * / // % **`, literals, parens) | yes | no |
+
+Every tool above is offered to the model through the same registry
+(`tools/__init__.py::build_registry`), and — as of HW4 — every one is wrapped as a LangChain
+tool by `agentlib.langchain_tools.to_langchain_tool` before being bound to the model
+(`ChatOpenAI.bind_tools`). The model decides when to call one from the user's request; nothing
+in `agentlib/graph.py` hardcodes "this kind of question uses this tool."
 
 ---
 
