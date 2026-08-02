@@ -1,0 +1,15 @@
+{
+  "ref": "refs/heads/main",
+  "before": "1111111111111111111111111111111111111111",
+  "after": "2222222222222222222222222222222222222222",
+  "compare": "https://github.com/org/repo/compare/1111111...2222222",
+  "commits": [
+    {
+      "id": "2222222222222222222222222222222222222222",
+      "message": "fix a typo in the readme",
+      "added": [],
+      "modified": ["README.md"],
+      "removed": []
+    }
+  ]
+}

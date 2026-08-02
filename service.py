@@ -232,6 +232,15 @@ def make_handler(send: Callable[[str, str], None], gate: ChannelGate, *,
     """Build the worker's handler. One turn, start to finish, on one thread."""
 
     def handle(event: InboundEvent) -> None:
+        # A github event is not a chat turn: no human is waiting, `text` is empty,
+        # and the work is a rescan + orphan diff (T10.2), not a `run_agent`
+        # answer. Route it to the watcher before the Q&A path below would mistake
+        # it for an empty question.
+        if event.source == "github":
+            from triggers import orphan_watch
+            orphan_watch.handle_github_event(event, send=send, verbose=verbose)
+            return
+
         identity = resolve(event)
         if verbose:
             print(f"\n[{event.source}] {identity} — {event.text[:80]!r}")

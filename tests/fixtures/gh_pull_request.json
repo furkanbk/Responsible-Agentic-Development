@@ -1,0 +1,11 @@
+{
+  "action": "opened",
+  "number": 7,
+  "pull_request": {
+    "number": 7,
+    "state": "open",
+    "title": "Add the webhook trigger",
+    "head": { "ref": "hw3/alejandro/webhook-orphan-watch" },
+    "base": { "ref": "main" }
+  }
+}
