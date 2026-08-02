@@ -29,6 +29,7 @@ from .graph_query import query_component_graph
 from .graph_write import prune_graph_node
 from .memory_tools import retrieve_memory, save_memory
 from .repo_scan import scan_repository_structure
+from .utility_tools import evaluate_expression
 
 # Every callable tool, in the order the model sees them. Reads and appends
 # before the destructive prune.
@@ -47,6 +48,7 @@ TOOL_FUNCTIONS: list[Callable] = [
     save_memory,
     verify_graph_integrity,
     prune_graph_node,
+    evaluate_expression,
 ]
 
 

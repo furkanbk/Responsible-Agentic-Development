@@ -7,10 +7,16 @@ Renamed from `smoke_hw1.py` in HW2: the old name does not match pytest's
 `test_*.py` discovery pattern, so `pytest tests/` silently collected none of
 these. It only ever ran when named explicitly.
 
-The model is SCRIPTED: `agentlib.loop.call` is monkeypatched with a fake that
-replays a fixed sequence of `Result`s. That keeps the tests deterministic and
-runnable offline while exercising the REAL loop, guards, gate, registry and
-tools end to end. The live-model integration run is T8.3.
+The model is SCRIPTED: `agentlib.graph._build_chat_model` is monkeypatched with
+a fake that replays a fixed sequence of `AIMessage`s. That keeps the tests
+deterministic and runnable offline while exercising the REAL loop, guards,
+gate, registry and tools end to end. The live-model integration run is T8.3
+(and, for the LangGraph path specifically, the `online` test in
+`tests/test_graph_agent.py`, HW4 decision #49).
+
+Pre-HW4 this patched `agentlib.loop.call` directly and scripted `Result`
+objects (agentlib.core); the seam moved when the loop's internals became a
+LangGraph graph — the behavior under test did not.
 
 Covers (T2.5): corrupt fixture -> the error branch fires and the loop does not
 treat it as data; gate declined -> the write is blocked; gate approved -> the
@@ -28,8 +34,9 @@ from pathlib import Path
 
 import pytest
 
-import agentlib.loop as loop_mod
-from agentlib.core import Result
+from langchain_core.messages import AIMessage
+
+import agentlib.graph as graph_mod
 from agentlib.guards import GATED, validate_args
 from agentlib.loop import run_agent
 from agentlib.schemas import schema_for
@@ -76,31 +83,31 @@ def graph_file(tmp_path, monkeypatch) -> Path:
 
 
 def scripted_call(responses):
-    """A fake for agentlib.loop.call — replays `responses`, then answers."""
+    """A fake for agentlib.graph._build_chat_model — replays `responses`, then answers."""
     queue = list(responses)
 
-    def fake_call(*args, **kwargs):
-        if queue:
-            return queue.pop(0)
-        return Result(text="(scripted) done", status="completed")
+    class _ScriptedModel:
+        def bind_tools(self, tools):
+            return self
 
-    return fake_call
+        def invoke(self, messages):
+            if queue:
+                return queue.pop(0)
+            return AIMessage(content="(scripted) done")
+
+    return lambda model: _ScriptedModel()
 
 
-def tool_call(name: str, arguments: dict, call_id: str = "c1") -> Result:
+def tool_call(name: str, arguments: dict, call_id: str = "c1") -> AIMessage:
     """One scripted model turn that requests a single tool call."""
-    item = {"type": "function_call", "name": name,
-            "arguments": json.dumps(arguments), "call_id": call_id}
-    return Result(
-        tool_calls=[{"name": name, "arguments": arguments, "call_id": call_id}],
-        output_items=[item],
-        status="completed",
-    )
+    return AIMessage(content="", tool_calls=[
+        {"name": name, "args": arguments, "id": call_id, "type": "tool_call"}
+    ])
 
 
-def answer(text: str) -> Result:
+def answer(text: str) -> AIMessage:
     """One scripted model turn that answers with no tool call (done-signal)."""
-    return Result(text=text, status="completed")
+    return AIMessage(content=text)
 
 
 # --- T2.1 append_decision_record ---------------------------------------------
@@ -269,7 +276,7 @@ class TestLoopIntegration:
         # error -> the loop must tag it "error", not treat it as data (B2).
         monkeypatch.setenv("RADF_GRAPH_PATH", str(tmp_path / "absent.json"))
         schemas, registry = build_registry()
-        monkeypatch.setattr(loop_mod, "call", scripted_call([
+        monkeypatch.setattr(graph_mod, "_build_chat_model", scripted_call([
             tool_call("verify_graph_integrity", {"scope": "all"}),
             answer("The graph is missing — a scan is needed before answering."),
         ]))
@@ -281,7 +288,7 @@ class TestLoopIntegration:
 
     def test_gate_declined_blocks_the_write(self, graph_file, monkeypatch):
         schemas, registry = build_registry()
-        monkeypatch.setattr(loop_mod, "call", scripted_call([
+        monkeypatch.setattr(graph_mod, "_build_chat_model", scripted_call([
             tool_call("prune_graph_node",
                       {"node_id": "agentlib.core", "cascade": "node_and_edges"}),
             answer("Understood — leaving agentlib.core in place."),
@@ -303,7 +310,7 @@ class TestLoopIntegration:
             approvals.append((name, args))
             return True
 
-        monkeypatch.setattr(loop_mod, "call", scripted_call([
+        monkeypatch.setattr(graph_mod, "_build_chat_model", scripted_call([
             tool_call("prune_graph_node",
                       {"node_id": "agentlib.core", "cascade": "node_and_edges"}),
             answer("Pruned agentlib.core and its edges."),
@@ -320,7 +327,7 @@ class TestLoopIntegration:
     def test_invalid_enum_is_caught_before_the_tool_runs(
             self, graph_file, monkeypatch):
         schemas, registry = build_registry()
-        monkeypatch.setattr(loop_mod, "call", scripted_call([
+        monkeypatch.setattr(graph_mod, "_build_chat_model", scripted_call([
             tool_call("verify_graph_integrity", {"scope": "everything"}),
             answer("Retrying with a valid scope."),
         ]))
@@ -330,7 +337,7 @@ class TestLoopIntegration:
 
     def test_max_step_cap_trips_on_a_forced_loop(self, graph_file, monkeypatch):
         schemas, registry = build_registry()
-        monkeypatch.setattr(loop_mod, "call", scripted_call([
+        monkeypatch.setattr(graph_mod, "_build_chat_model", scripted_call([
             tool_call("verify_graph_integrity", {"scope": "nodes"}, "c1"),
             tool_call("verify_graph_integrity", {"scope": "edges"}, "c2"),
             tool_call("verify_graph_integrity", {"scope": "all"}, "c3"),
@@ -342,7 +349,7 @@ class TestLoopIntegration:
     def test_stall_detection_stops_identical_repeats(
             self, graph_file, monkeypatch):
         schemas, registry = build_registry()
-        monkeypatch.setattr(loop_mod, "call", scripted_call([
+        monkeypatch.setattr(graph_mod, "_build_chat_model", scripted_call([
             tool_call("verify_graph_integrity", {"scope": "all"}, "c1"),
             tool_call("verify_graph_integrity", {"scope": "all"}, "c2"),
         ]))

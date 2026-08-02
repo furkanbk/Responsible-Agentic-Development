@@ -11,7 +11,10 @@ Two levels of testing, mirroring how the smoke suite is built:
      error branch (bad root, bad max_depth, corrupt graph, missing component).
 
   2. Integration — the REAL run_agent loop over the REAL tools, with only the
-     model SCRIPTED (agentlib.loop.call monkeypatched, same trick as smoke_hw1).
+     model SCRIPTED (HW4: agentlib.graph._build_chat_model monkeypatched, same
+     trick as smoke_hw1 — pre-HW4 this patched agentlib.loop.call directly;
+     the seam moved when the loop's internals became a LangGraph graph,
+     decision #49, the behavior under test did not).
      Proves scan -> query -> answer runs the ORAV loop to `answered`, and that a
      tool's structured error reaches the loop as its own `error` branch instead
      of flowing back as valid data (Part B, B2; CLAUDE.md §5).
@@ -26,8 +29,9 @@ from pathlib import Path
 
 import pytest
 
-import agentlib.loop as loop_mod
-from agentlib.core import Result
+from langchain_core.messages import AIMessage
+
+import agentlib.graph as graph_mod
 from agentlib.loop import run_agent
 from tools import build_registry
 from tools.graph_query import query_component_graph
@@ -72,29 +76,30 @@ def sample_repo(tmp_path) -> Path:
 # --- scripted-model helpers (same shape as tests/smoke_hw1.py) ---------------
 
 
-def tool_call(name: str, arguments: dict, call_id: str = "c1") -> Result:
+def tool_call(name: str, arguments: dict, call_id: str = "c1") -> AIMessage:
     """One scripted model turn requesting a single tool call."""
-    item = {"type": "function_call", "name": name,
-            "arguments": json.dumps(arguments), "call_id": call_id}
-    return Result(
-        tool_calls=[{"name": name, "arguments": arguments, "call_id": call_id}],
-        output_items=[item], status="completed",
-    )
+    return AIMessage(content="", tool_calls=[
+        {"name": name, "args": arguments, "id": call_id, "type": "tool_call"}
+    ])
 
 
-def answer(text: str) -> Result:
+def answer(text: str) -> AIMessage:
     """One scripted model turn that answers with no tool call (done-signal)."""
-    return Result(text=text, status="completed")
+    return AIMessage(content=text)
 
 
 def scripted_call(responses):
-    """A fake for agentlib.loop.call — replays `responses`, then answers."""
+    """A fake for agentlib.graph._build_chat_model — replays `responses`, then answers."""
     queue = list(responses)
 
-    def fake_call(*args, **kwargs):
-        return queue.pop(0) if queue else answer("(scripted) done")
+    class _ScriptedModel:
+        def bind_tools(self, tools):
+            return self
 
-    return fake_call
+        def invoke(self, messages):
+            return queue.pop(0) if queue else answer("(scripted) done")
+
+    return lambda model: _ScriptedModel()
 
 
 # --- unit: scan_repository_structure -----------------------------------------
@@ -221,7 +226,7 @@ class TestReadPathInLoop:
     def test_scan_then_query_runs_the_loop_to_answered(
             self, sample_repo, graph_env, monkeypatch):
         schemas, registry = build_registry()
-        monkeypatch.setattr(loop_mod, "call", scripted_call([
+        monkeypatch.setattr(graph_mod, "_build_chat_model", scripted_call([
             tool_call("scan_repository_structure",
                       {"root": str(sample_repo), "max_depth": 3, "kind": "python"}),
             tool_call("query_component_graph",
@@ -241,7 +246,7 @@ class TestReadPathInLoop:
         # Corrupt graph -> query returns a structured error, NOT a fake answer.
         graph_env.write_text("{ not json", encoding="utf-8")
         schemas, registry = build_registry()
-        monkeypatch.setattr(loop_mod, "call", scripted_call([
+        monkeypatch.setattr(graph_mod, "_build_chat_model", scripted_call([
             tool_call("query_component_graph", {"component": "x", "relation": "all"}),
             answer("the graph is unreadable — a scan is needed first"),
         ]))
