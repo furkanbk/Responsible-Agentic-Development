@@ -102,6 +102,14 @@ HW1 is deliberately framework-free. The point is to understand the loop, not to 
   install it, do not add its MCP server, do not write against its schema.
 - any dependency added "for convenience" that the stdlib already covers
 
+**§4 HW4 amendment.** The HW1 no-framework rule above is **lifted for `langgraph`,
+`langchain`, and `langchain-openai` only**, for the HW4 framework refactor (decision #53) —
+same pattern as the §7.1 HW2 amendment that lifted the multi-agent prohibition for named
+pieces only. LlamaIndex, CrewAI, AutoGen, PydanticAI, Haystack, vector databases and external
+code-indexing tools remain out of scope; adding them still needs a decision record first, not
+just an opportunity. `agentlib.core.call` (the raw Zen client) is untouched and stays in use
+outside the LangGraph path — see `ARCHITECTURE.md` decisions #49-#52.
+
 These frameworks become allowed in later homeworks on this same repo — Session 9 covers
 exactly this refactor. Adding them now removes the thing being graded. If you believe a
 new dependency is genuinely required, propose it in a PR comment first; do not add it and
@@ -185,3 +193,26 @@ They cost more than they look like they should, and each one is a decision recor
 - **Everything in the overlay keys on `resolve_uid(...)`** (#22), never a raw component string.
 - **`store/` is off limits to tools.** It is the agent's own memory and the decisions
   constraining it; `read_source_file` and `apply_change` both refuse it.
+
+---
+
+## 8. LangGraph/LangChain refactor — testing policy
+
+Applies to the framework refactor of the first-half agent (LangGraph orchestration, LangChain
+tool interface) and any homework built on top of it.
+
+- **New test suites, not amended old ones.** The pre-refactor tests (`test_smoke_hw1.py`, etc.)
+  stay as-is and keep validating the pre-refactor code path until it is retired. Framework
+  behavior gets its own test files.
+- **Every new test suite needs at least one online test.** Each new test *file* covering
+  converted functionality must contain at least one test that makes a real call through the
+  framework (a live LLM call, not a mocked/stubbed model or canned tool response). The rest of
+  that suite's tests may be offline (mocked LLM, fixture-driven).
+  **Why:** framework conversion bugs — a tool schema that doesn't actually reach the model,
+  a state field the graph silently drops, a routing edge that never fires — are exactly the
+  class of bug that offline/mocked tests don't catch, because the mock never has to satisfy the
+  real framework's calling contract.
+  **How to apply:** when writing or reviewing a new LangGraph/LangChain test suite, check for at
+  least one test not marked offline/mocked before approving. Mark online tests clearly (e.g. a
+  `@pytest.mark.online` marker or filename suffix) so they can be skipped in CI environments
+  without API access, but they must exist and must run somewhere before merge.

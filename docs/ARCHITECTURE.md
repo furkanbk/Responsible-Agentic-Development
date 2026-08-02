@@ -6,6 +6,9 @@
 >
 > Last updated: 2026-07-26 — HW2 state layers, overlay, and the two-agent pipeline (Berat);
 > planner + gated `apply_change` implemented, branch `hw2/alejandro/planner-and-write` (Alejandro)
+>
+> **2026-08-02 — HW4 begins:** framework refactor onto LangGraph/LangChain (decisions #49-#53),
+> branch `hw4/berat/langgraph-foundation` (Berat). HW1-HW3 sections below are historical record.
 
 ---
 
@@ -143,7 +146,43 @@ decision #21). The other three are ours and are the durable half.
 - **Branches (own-branch, never dressed as data):** invalid-args, gate/decline, tool-returned
   structured error (B2). Tool output re-enters context wrapped as `{"result": ...}` data.
 - **Returns:** `{"answer", "steps", "trace", "stopped"}`; `trace` events carry a `branch` tag.
-- **Status:** **done** (Phase 0)
+- **HW4 note (decision #49):** internals are now a compiled LangGraph graph
+  (`agentlib/graph.py`); the signature and return shape above are **frozen unchanged** so
+  `agents/executor.py`, `agents/admin.py`, `service.py`, and `main.py` needed zero edits.
+- **Status:** **done** (Phase 0); internals refactored onto LangGraph (Phase 12)
+
+### `agentlib/graph_state.py` — LangGraph state schema
+<!-- OWNER: Berat -->
+- **Owns:** `AgentState`, a `TypedDict` — `messages` (LangChain `BaseMessage` list, reduced
+  with `add_messages`), `trace`, `signatures`, `declined_signatures`, `step`, `stopped`, `answer`.
+  Same fields `loop.py` already tracked as local variables (decision #51) — not an ad-hoc dict.
+- **Depends on:** `langgraph`, `langchain_core`
+- **Status:** **done** (Phase 12)
+
+### `agentlib/langchain_tools.py` — the tool-wrapping convention
+<!-- OWNER: Berat -->
+- **Owns:** `to_langchain_tool(fn) -> StructuredTool`, `build_langchain_tools(fns) -> list`.
+  The single place a plain Python tool function becomes a LangChain tool.
+- **Contract notes:** tool functions are unchanged plain callables — same signature, same
+  docstring-as-description, same `Literal[...]`-derived enums, same ambient
+  `session_scope`/`impact_scope` reads (invariant #25 is untouched: nothing here adds an
+  identity or scope parameter). Tool authors never call LangChain's tool API directly
+  (decision #50).
+- **Depends on:** `langchain_core`
+- **Status:** **done** (Phase 12)
+
+### `agentlib/graph.py` — the LangGraph orchestration core
+<!-- OWNER: Berat -->
+- **Owns:** `build_graph(tools, registry, approve, ...) -> CompiledGraph` — an `agent` node
+  (a LangChain `ChatOpenAI` bound to the Zen base URL via `agentlib.core.BASE_URL`, using
+  `bind_tools`) and a `tools` node.
+- **Contract notes:** the `tools` node re-hosts `loop.py`'s existing branch logic by calling
+  straight into `agentlib/guards.py` (`validate_args`, `requires_approval`, `is_error_result`,
+  `detect_stall`, `call_signature`) — no guard logic is duplicated or rewritten, only moved to
+  a graph node. The approval gate stays the existing synchronous `approve(name, args) -> bool`
+  callback, not LangGraph's native `interrupt()` (decision #52).
+- **Depends on:** `langgraph`, `langchain_openai`, `agentlib.guards`, `agentlib.core`
+- **Status:** **done** (Phase 12)
 
 ### `tools/repo_scan.py` — repository → graph
 <!-- OWNER: Alejandro -->
@@ -304,7 +343,7 @@ component moved or was removed, so the decision may be stale and should be surfa
 | # | Date | Component | Decision | Rejected alternative | Why |
 |---|------|-----------|----------|----------------------|-----|
 | 1 | | repo-wide | Knowledge graph stored as a single JSON file | SQLite, graph DB | HW1 forbids extra deps; JSON is inspectable and diffable in PRs |
-| 2 | | agentlib | Raw Python loop, no framework | LangGraph | HW1 constraint; framework refactor is Session 9 |
+| 2 | | agentlib | Raw Python loop, no framework | LangGraph | HW1 constraint; framework refactor is Session 9 — **superseded by #49** (HW4: the framework refactor this decision deferred) |
 | 3 | | tools | `prune_graph_node` is the only gated tool | gating all writes | Irreversibility decides the gate; append/scan are recoverable |
 | 4 | | indexing | GitNexus selected as the future structural indexer (post-HW1) | CodeGraph; continuing with hand-rolled `ast` scanning long-term | GitNexus stores the graph in an embedded graph DB (LadybugDB) and exposes a raw `cypher` tool plus a published schema resource, so custom entities and traversals are supported through the public API. CodeGraph is SQLite/FTS5 behind a single `codegraph_explore` tool — extending it means reaching into internals its own file-watcher continuously rewrites. |
 | 5 | | indexing | Decisions live in a **separate overlay**, joined to structure by `symbol_uid` — never written into indexer-owned nodes | enriching the indexer's nodes in place with decision metadata | Both candidate indexers re-index aggressively (CodeGraph on every file event, GitNexus on `analyze`). Anything injected into their extraction output is overwritten on the next sync, and couples our core contribution to their internal schema. The overlay makes re-indexing free and makes a stale reference visible as an orphan rather than a silent loss. |
@@ -367,6 +406,21 @@ this table — the renumbering in T3.4/T8.4 was the lesson.
 | 46 | 2026-07-29 | triggers.webhook / triggers.orphan_watch *(Alejandro)* | The webhook **verifies then enqueues, and does nothing else**; the rescan + orphan diff run on the one worker. And the orphan set that decides whether to speak is a **code-computed diff against a persisted watermark**, surfaced by `symbol_uid` and commit range **only** | scanning inline in `do_POST`; letting the model read the integrity report and decide what to say; naming the orphaned decision's text or author in the notice | "Anyone with the URL can call your webhook" — so an unauthenticated body must not get to pick how much work the box does, and the HTTP thread must not become a second place ambient identity is set (it isn't, because github events carry `external_user_id=None`). Verify-then-enqueue is the same "producers append, the agent consumes at its own pace" the queue is built on. The count comes from code because "how many decisions newly went stale" is a set difference, not a judgement: the model never sees the report, so it can neither miss an orphan nor invent one, and re-running the same push is idempotent because the watermark already holds it. The notice carries the uid and the commit range and stops there: a `symbol_uid` is a structural path, but a decision's *content* or *owner* can be private, and a push is a shared-thread event — surfacing "there is a private decision here, owned by X" is the same leak the T11.2 guard exists to prevent (#24, #44). Surfaced for review, never deleted (§6): the component almost certainly just moved, which is the signal, not an error. |
 | 47 | 2026-07-29 | channel.silence | The leak guard is decided from the **visibility-filtered query result** (a comparison of two counts), and it withholds **metadata — existence and ownership — as well as content** | handing the model both row sets with an instruction to keep one quiet; or answering "there's a private decision about that, ask X" | Decision #24: scoping is a WHERE clause, not a prompt. `evaluate_silence` replicates `visible_to`'s predicate over the candidate rows and stays silent when the asker's view is empty while the unfiltered view is not and every row is private to another user. It is not a judgement call and must not become one. The subtly-wrong "ask X" answer leaks less and is still a leak: it discloses that a record exists and who owns it, and existence is content. So the silence record is scoped to the **owner** (`user:<owner>`) — the owner learns someone looked, the asker learns nothing — and `evidence` carries only uids, counts and the asker, never the withheld text (a guard that audits the secret has moved the leak, not closed it). |
 | 48 | 2026-07-29 | agents.admin | The admin registry is **narrow by construction** (an explicit `ADMIN_TOOLS` list, never `build_registry()` filtered), and the path is gated on admin identity **AND** an explicit in-channel confirmation — both, never either alone | a filtered full registry; an allowlist as sufficient authority | A filter is one bug away from being the full registry; a list is not — the registry contents are the privilege boundary, so they are stated, not computed-then-narrowed. And an allowlist alone makes *every* message from an admin a privileged one, including the ones they did not mean that way: identity says *who may*, confirmation says *they mean this one*. `admit()` checks both before the model or a store is touched, so a refusal spends nothing. Write scope is still the ambient impact set (#25) — empty denies every write — granted per run, and the loop's approval gate on `apply_change`/`prune_graph_node` is not removed for admins. |
+
+### HW4 decisions
+
+Numbers **#49–#53** are Phase 12 (Berat, blocking). Reserved for Phase 13: **#54** (Alejandro,
+tool conversion sweep + second new tool), **#55** (Dias, test-convention sweep + executor/
+admin/service verification) — pre-allocated so the two parallel branches don't collide, same
+reason #41/#46/#47 were pre-allocated in HW3.
+
+| # | Date | Component | Decision | Rejected alternative | Why |
+|---|------|-----------|----------|----------------------|-----|
+| 49 | 2026-08-02 | agentlib.loop | LangGraph adopted for orchestration; `run_agent`'s signature and return shape (`{"answer","steps","trace","stopped","run_id"}`) are **frozen unchanged** — the framework swap is internal to `loop.py` | Changing `run_agent`'s contract to something more "native" to LangGraph (e.g. returning the raw final state) | `run_agent` is imported by `agents/executor.py`, `agents/admin.py`, `service.py`, and `main.py`. Freezing the contract makes "preserve all first-half functionality" true by construction — every existing caller needs zero code changes — rather than something re-verified caller by caller. |
+| 50 | 2026-08-02 | agentlib.langchain_tools | Tool functions stay plain Python callables; `to_langchain_tool(fn)` is the **one** conversion point | Having each tool author write a LangChain `@tool`/`StructuredTool` directly | Ambient identity/scope (`session_scope`, `impact_scope`, decision #25) is already not a function parameter, so nothing about LangChain's calling convention threatens it — but only if tool authors keep writing plain functions instead of learning a second, LLM-facing argument-schema API where the temptation to add an `author_id` "for testability" would reappear. One conversion point makes the convention enforceable in one file instead of by review discipline across eight. |
+| 51 | 2026-08-02 | agentlib.graph_state | State schema is `AgentState`, a `TypedDict` (`messages` + `add_messages` reducer, `trace`, `signatures`, `declined_signatures`, `step`, `stopped`, `answer`) | An ad-hoc dict threaded through node functions | Explicit state schema is the professor's stated requirement, not just style. The fields are exactly what `loop.py`'s local variables already tracked — the schema documents an existing shape, it does not invent a new one. |
+| 52 | 2026-08-02 | agentlib.graph | The approval gate stays the existing synchronous `approve(name, args) -> bool` callback; LangGraph's native `interrupt()` is **not** adopted in this increment | Migrating the gate onto `interrupt()` + a checkpointer | HW3 already solved the async/human-in-the-loop case one layer up (`agentlib/approval.py`, `channel/*`, decision #41) for the channel path specifically. Swapping the gate mechanism inside the loop itself would ripple into `service.py`/`channel/*` for a requirement ("explicit state schema", "framework-integrated tools") that doesn't ask for it. Revisit if/when the channel path itself moves onto LangGraph. |
+| 53 | 2026-08-02 | repo-wide / CLAUDE.md §4 | The HW1 no-framework rule is lifted for `langgraph`, `langchain`, `langchain-openai` **only**, recorded as a CLAUDE.md §4 amendment | Lifting the rule wholesale; forking a separate "HW4 rules" document | Same pattern as the §7.1 HW2 amendment (lifted the multi-agent prohibition for exactly what HW2 named). LlamaIndex, CrewAI, AutoGen, PydanticAI, Haystack, vector DBs and external code-indexers stay out of scope — a new dependency still needs a decision record, not just an opportunity (CLAUDE.md §4). |
 
 ---
 

@@ -1,17 +1,18 @@
-# TODO.md — HW1 (complete) + HW2 (complete) + HW3 (current)
+# TODO.md — HW1-HW3 (complete) + HW4 (current)
 
 **Read this file before any implementation.** If a task is not here, it is not in scope.
 Every file has exactly one owner. Stubs are contracts — do not fill in a stub you do not own.
 
 Branch: `hw1/<owner>/<short-task>` · `hw2/<owner>/<short-task>` · `hw3/<owner>/<short-task>` ·
-PR into `main` · no direct pushes.
+`hw4/<owner>/<short-task>` · PR into `main` · no direct pushes.
 
-> **Current phase: HW3** (Phases 9–11). HW1 (Phases 0–3) and HW2 (Phases 4–8) are closed; their
-> boxes below are historical record. HW3 gives the system a real surface: a Telegram bot and a
-> GitHub webhook, two non-message triggers, a queue, a recorded silence branch, and a privileged
-> admin path.
+> **Current phase: HW4** (Phase 12-13). HW1 (Phases 0-3), HW2 (Phases 4-8) and HW3 (Phases 9-11)
+> are closed; their boxes below are historical record. HW4 refactors the agent onto LangGraph
+> (explicit state schema) with LangChain-integrated tools, preserving every HW1-HW3 behavior,
+> and adds at least two new framework-called tools. See §Contracts (HW4) before touching
+> `agentlib/loop.py`, `agentlib/core.py`, or any file under `tools/`.
 >
-> **Stale boxes, knowingly left alone.** T7.3–T7.5 are still `[ ]` below but the code is
+> **Stale boxes, knowingly left alone.** T7.3-T7.5 are still `[ ]` below but the code is
 > committed and merged (`d4e0280`, `7c84a0b`, `37a983b`). Dias ticks them in his HW3 branch;
 > nobody else edits them. T8.3 (live runs) is the one genuinely open HW2 item and it is now
 > easier to close from the channel than from the CLI — see T9.6.
@@ -20,13 +21,20 @@ PR into `main` · no direct pushes.
 
 | You are | Your next task | Blocked by | Read first |
 |---|---|---|---|
-| **Berat** | *(Phase 9 done and under test — reviewing Phase 10/11 PRs, then live runs)* | **nothing** | this file, then §Contracts (HW3) |
-| **Alejandro** | *(Phase 10 done — webhook + orphan watch merged, under test)* | — | §Contracts (`InboundEvent`), `tools/decisions.py::verify_graph_integrity` (read-only) |
-| **Dias** | **T11.1** `triggers/heartbeat.py`, then **T11.2** the silence policy | **nothing — Phase 9 has landed** | §Contracts (`InboundEvent`, `SilenceDecision`), `monitor/judge.py` |
+| **Berat** | **Phase 12** — LangGraph core, tool-wrapping convention, `loop.py` internals, one reference tool | **nothing — blocking, do first** | this file, then §Contracts (HW4) |
+| **Alejandro** | **Phase 13a** — convert the remaining 7 tools' registration through `to_langchain_tool`, add a second new framework tool | **Phase 12 merged** (needs `agentlib/langchain_tools.py`) | §Contracts (HW4): `to_langchain_tool` signature, `AgentState` |
+| **Dias** | **Phase 13b** — apply the online/offline test convention (CLAUDE.md §8) to the remaining suites; verify `executor.py`/`admin.py`/`service.py` still pass against the refactored `loop.py` | **Phase 12 merged** (needs the frozen `run_agent` return shape to test against) | §Contracts (HW4): frozen `run_agent` return shape, CLAUDE.md §8 |
+
+**HW4 is NOT full-parallel from the start, by design.** `agentlib.loop.run_agent` is imported
+by `agents/executor.py`, `agents/admin.py`, `service.py`, and `main.py` — it is the one file
+three people cannot each redesign independently without collision. Phase 12 freezes the state
+schema, the tool-wrapping convention, and the gate strategy as contracts (same pattern as
+`symbol_uid`, the plan dict, and `InboundEvent` before it) so Phases 13a/13b are then genuinely
+parallel and share no file with each other.
 
 **HW3 serialised exactly once, at the start, and that point has passed.** Phase 9 is built and
-under test (`tests/test_channel.py`, 70 tests). Both remaining phases are unblocked and share no
-file with each other.
+under test (`tests/test_channel.py`, 70 tests). Both remaining HW3 phases are unblocked and
+share no file with each other.
 
 Two things Phase 9 left deliberately for its owner to finish:
 - `channel/silence.py::evaluate_silence` still raises `NotImplementedError`. `service.py` calls
@@ -137,6 +145,35 @@ contracts below).
 **Shared, changed only by agreement:** the stub signatures in `tools/*.py`, the graph JSON
 schema in `ARCHITECTURE.md` §4, the `Result` fields in `agentlib/core.py`, and — new in HW2 —
 the `AgentResult` envelope fields, the plan dict shape, and the `symbol_uid` format.
+
+### HW4 (new surface)
+
+| Area | Files | Owner | Phase |
+|---|---|---|---|
+| LangGraph state schema | `agentlib/graph_state.py` | **Berat Furkan Kocak** | 12 — **blocking** |
+| Tool-wrapping convention | `agentlib/langchain_tools.py` | **Berat Furkan Kocak** | 12 — **blocking** |
+| LangGraph orchestration core | `agentlib/graph.py` | **Berat Furkan Kocak** | 12 — **blocking** |
+| `loop.py` internals onto the graph (signature frozen) | `agentlib/loop.py` | **Berat Furkan Kocak** | 12 — **blocking** |
+| Reference new tool #1 (proves the conversion pattern) | `tools/utility_tools.py` | **Berat Furkan Kocak** | 12 |
+| New framework-integrated test suite (online + offline) | `tests/test_graph_agent.py` | **Berat Furkan Kocak** | 12 |
+| Repo docs | `docs/ARCHITECTURE.md`, `docs/TODO.md`, `.claude/CLAUDE.md`, `README.md` | **Berat Furkan Kocak** | 12 |
+| **Convert the remaining 7 tools' registration through `to_langchain_tool`** | `tools/__init__.py`, `tools/repo_scan.py`, `tools/graph_query.py`, `tools/decisions.py`, `tools/graph_write.py`, `tools/memory_tools.py`, `tools/apply_change.py` (registration only — tool bodies untouched) | **Alejandro Ramírez Trueba** | 13a |
+| **Reference new tool #2** | one new tool file, framework-integrated | **Alejandro Ramírez Trueba** | 13a |
+| **Online/offline test convention applied to the remaining suites** (CLAUDE.md §8) | `tests/test_planner.py`, `tests/test_apply_change.py`, `tests/test_monitor.py`, others as needed | **Dias Sarkytbaev** | 13b |
+| **Verify `executor.py`/`admin.py`/`service.py` still pass unchanged against the refactored `loop.py`** | no source changes expected — a verification pass, filing a bug against Phase 12 if the frozen contract broke something | **Dias Sarkytbaev** | 13b |
+
+**Why this split.** Phase 12 is deliberately the smallest set of files that (a) everything else
+imports and (b) defines the two frozen contracts (`AgentState`, `to_langchain_tool`) the other
+two phases build against — mirrors Phase 9/HW3's "Berat first, then two independent branches"
+shape. Once Phase 12 merges, Alejandro's and Dias's phases touch disjoint files (`tools/*.py`
+registration vs `tests/*.py`) and neither blocks the other.
+
+**Deliberately untouched in HW4:** tool *bodies* (`repo_scan`, `graph_query`, `decisions`,
+`graph_write`, `memory_tools`, `apply_change` keep their existing logic — only how they're
+registered with the model changes), `agentlib/core.py` (the raw Zen client stays in use outside
+the LangGraph path — planner, monitor, demos all call it directly), `agentlib/context.py`,
+`agentlib/session.py`, `agentlib/runlog.py`, `agentlib/approval.py`, all of `channel/*` and
+`triggers/*` (decision #52 — the gate stays the existing callback, not `interrupt()`).
 
 ---
 
@@ -250,6 +287,50 @@ calling it directly with a fixture `runs.jsonl`.
 
 ---
 
+## Contracts frozen for HW4
+
+These ship in **Phase 12** (Berat), before Alejandro or Dias touch a file, so Phases 13a/13b are
+never blocked on Phase 12 beyond its merge. Build against them; if one is wrong, say so and we
+change it together — do not work around it.
+
+**7. `AgentState`** — `agentlib/graph_state.py`, the LangGraph state schema:
+
+```python
+class AgentState(TypedDict):
+    messages:            Annotated[list[BaseMessage], add_messages]
+    trace:                list[dict]   # {"tool","args","output","branch"}, branch as in #3
+    signatures:           list[str]    # stall detection, same shape as loop.py today
+    declined_signatures:  list[str]
+    step:                 int
+    stopped:              str | None   # answered|max_steps|stalled|declined|truncated
+    answer:               str | None
+```
+
+**8. `to_langchain_tool`** — `agentlib/langchain_tools.py`, the one conversion point:
+
+```python
+def to_langchain_tool(fn: Callable) -> StructuredTool: ...
+def build_langchain_tools(fns: list[Callable]) -> list[StructuredTool]: ...
+```
+
+Tool authors write the same plain Python function they always have (docstring = description,
+`Literal[...]` = enum, ambient `session_scope`/`impact_scope` reads — never a new parameter for
+identity or scope, decision #25 unchanged). `to_langchain_tool` is the only place that function
+becomes a LangChain tool; nobody hand-writes a `@tool`-decorated function against a tool's logic.
+
+**9. `run_agent`'s return shape is frozen exactly as contract #3 already states it** — see
+`agentlib.loop.run_agent`. The internals are now a compiled LangGraph graph; the shape
+`{"answer", "steps", "trace", "stopped", "run_id"}` and every trace entry's `branch` tag
+(`ok|error|declined|invalid_args`) do not change. This is what makes Dias's Phase 13b a
+verification pass instead of a rewrite.
+
+**Working without the other pieces.** Alejandro does not need a running graph to convert a
+tool — write the function, call `to_langchain_tool(fn)` in a unit test, assert the derived
+schema. Dias does not need to read `agentlib/graph.py` at all — `run_agent`'s contract (#9) is
+everything the existing test suites already assume.
+
+---
+
 ## Homework requirement → owner (grading traceability)
 
 ### HW1
@@ -296,6 +377,16 @@ calling it directly with a fixture `runs.jsonl`.
 | A silence branch + a written record of the decision | `channel/silence.py::evaluate_silence` → `silences` table; primary case is the private-decision leak guard | T11.2 (T9.4 store) | **Dias** (Berat, store) |
 | A queue — what happens to input arriving mid-turn | `channel/queue.py` — single worker, FIFO, per-path policy | T9.3 | Berat |
 | An admin subagent + a written boundary | `agents/admin.py` + `rules/ADMIN_BOUNDARY.md` | T11.3 | **Dias** |
+
+### HW4
+
+| HW4 requirement | Where it is satisfied | Phase | Owner |
+|---|---|---|---|
+| Refactor onto LangGraph, LangChain tools, Python | `agentlib/graph.py`, `agentlib/langchain_tools.py` | 12 | Berat |
+| Preserve all first-half functionality | `run_agent`'s frozen signature/return shape (contract #9); full pre-existing suite passes unchanged | 12 | Berat |
+| Explicit state schema (not an ad-hoc dict) | `agentlib/graph_state.py::AgentState` (`TypedDict`) | 12 | Berat |
+| ≥2 tools added, framework-integrated, model decides when to call | `tools/utility_tools.py` (Berat, #1) + Phase 13a's second tool (Alejandro, #2) — both registered through `to_langchain_tool` and offered via `bind_tools`, never hardcoded routing | 12, 13a | Berat + **Alejandro** |
+| New tests per functionality, ≥1 online per suite (CLAUDE.md §8) | `tests/test_graph_agent.py` (Phase 12); remaining suites (Phase 13b) | 12, 13b | Berat + **Dias** |
 
 ---
 
@@ -863,6 +954,83 @@ except the `evaluate_silence` body, which is yours by contract.
       confirmation cannot either; the admin registry contains exactly the listed tools.
 
 **Depends on:** T9.0 stubs, and T9.4 for `record_silence`. Not on Alejandro.
+
+---
+
+## Phase 12 — LangGraph/LangChain foundation (Berat) — **blocking, do first**
+
+### T12.1 — State schema
+
+- [x] `agentlib/graph_state.py::AgentState` (contract #7): `TypedDict`, `messages` reduced with
+      `add_messages`, plus `trace`/`signatures`/`declined_signatures`/`step`/`stopped`/`answer`.
+
+### T12.2 — Tool-wrapping convention
+
+- [x] `agentlib/langchain_tools.py::to_langchain_tool(fn)` / `build_langchain_tools(fns)`
+      (contract #8). Tool functions stay plain callables — no new parameters, ambient
+      `session_scope`/`impact_scope` unchanged (#25).
+
+### T12.3 — LangGraph orchestration core
+
+- [x] `agentlib/graph.py::build_graph(...)` — `agent` node (`ChatOpenAI` bound to the Zen base
+      URL, `bind_tools`) + `tools` node reusing `agentlib/guards.py` for validate/gate/stall/
+      error branching (no guard logic duplicated).
+- [x] Gate stays the existing synchronous `approve(name, args) -> bool` callback (#52) — no
+      `interrupt()` in this phase.
+
+### T12.4 — Rewire `loop.py`
+
+- [x] `agentlib/loop.py::run_agent(...)` keeps its exact signature and return shape (contract
+      #9); internals invoke the compiled graph from T12.3. `DEFAULT_SYSTEM` unchanged.
+- [x] Full pre-existing test suite (`pytest`) passes unchanged — proves `executor.py`,
+      `admin.py`, `service.py`, `main.py` needed zero edits.
+
+### T12.5 — Reference new tool
+
+- [x] `tools/utility_tools.py::evaluate_expression` — a safe arithmetic calculator, no external
+      calls. Registered in `tools/__init__.py::TOOL_FUNCTIONS`. Proves the T12.2 conversion
+      pattern end-to-end and is new-tool #1 of the HW4 requirement's ≥2.
+
+### T12.6 — Tests + docs
+
+- [x] `tests/test_graph_agent.py` per CLAUDE.md §8: one `@pytest.mark.online` test (real Zen
+      call through the graph, skipped if `OPENCODE_API_KEY` unset) + offline tests (fake/mocked
+      chat model) covering `AgentState` shape, tool-call routing, gate/decline, stall, invalid
+      args, structured error, and the frozen `run_agent` return shape.
+- [x] Decisions **#49-#53** (ARCHITECTURE.md), CLAUDE.md §4 HW4 amendment, this file's HW4
+      sections, README `## Tools` + two Mermaid diagrams (agent/tool graph, one sequence diagram).
+
+**Depends on:** nothing. **Blocks:** Phase 13a, Phase 13b.
+
+---
+
+## Phase 13a — Tool conversion sweep + second new tool (Alejandro)
+
+- [ ] Convert `tools/repo_scan.py`, `tools/graph_query.py`, `tools/decisions.py`,
+      `tools/graph_write.py`, `tools/memory_tools.py`, `tools/apply_change.py`'s *registration*
+      through `to_langchain_tool` (T12.2) — tool bodies untouched, this is a registry-assembly
+      change in `tools/__init__.py`, not a rewrite of the tools themselves.
+- [ ] One more new tool (new-tool #2 of the HW4 requirement's ≥2), framework-integrated the same
+      way, with an action-shaped name and a when/when-not docstring (same bar as HW1's tools).
+- [ ] `tests/test_langchain_tools.py` (or extend an existing suite) verifying each converted
+      tool's LangChain schema matches what `schema_for` would have derived (enum fidelity,
+      required-ness), plus the same for the new tool.
+
+**Depends on:** Phase 12 merged (`agentlib/langchain_tools.py` must exist). **Not on Dias.**
+
+---
+
+## Phase 13b — Test-convention sweep + regression verification (Dias)
+
+- [ ] Apply the online/offline convention (CLAUDE.md §8) to the HW1-HW3 suites that exercise the
+      agent through `run_agent` (at minimum `tests/test_planner.py`, `tests/test_apply_change.py`,
+      `tests/test_monitor.py`) — at least one online test per suite, marked and skippable.
+- [ ] Run `executor.py`/`admin.py`/`service.py`/`main.py` against the refactored `loop.py` and
+      confirm no code changes were needed on their side (contract #9). File a bug against Phase
+      12 if the frozen return shape drifted anywhere.
+
+**Depends on:** Phase 12 merged (needs the frozen `run_agent` contract to verify against).
+**Not on Alejandro.**
 
 ---
 
