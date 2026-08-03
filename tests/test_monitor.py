@@ -21,10 +21,18 @@ import json
 from pathlib import Path
 
 import pytest
+from _online import online_key  # noqa: F401 — pytest fixture, used by name
 
 import monitor.judge as judge_mod
 from agentlib.core import Result
-from monitor.judge import judge_run, load_rubric, problems, report
+from monitor.judge import (
+    ADHERENCE,
+    GROUNDING,
+    judge_run,
+    load_rubric,
+    problems,
+    report,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "runs_sample.jsonl"
 
@@ -206,3 +214,36 @@ def test_problems_surfaces_the_serious_run_not_the_clean_one(monkeypatch):
     serious = judge_run(runs()["r_serious01"])
     found = problems([clean, serious])
     assert serious in found and clean not in found
+
+
+# --- online: a real judge model over a fixture run (HW4, T13b / CLAUDE.md §8) --
+
+
+@pytest.mark.online
+def test_online_judge_returns_a_verdict_within_its_contract(online_key):
+    """One real model call through the judge, asserted on its CONTRACT.
+
+    Every other test here scripts the model, which proves my reconciliation
+    logic but never proves the real model's reply survives `_parse` — a mocked
+    judge always returns exactly the JSON the mock was written to return. That
+    is the class of bug §8 exists for, so this test asks the live model and
+    checks the shape it must always satisfy:
+
+      * the verdict is gradeable (the reply parsed at all),
+      * both axes carry one of their NAMED values, never a score,
+      * every surviving violation carries its expected/observed rationale
+        (T7.3a) — the code drops the unbacked ones, so anything that made it
+        this far must be checkable.
+
+    Deliberately not asserted: WHICH verdict comes back. The wording and the
+    severity a live judge picks vary run to run; pinning them would make this a
+    flake rather than a contract test.
+    """
+    verdict = judge_run(runs()["r_serious01"])
+
+    assert verdict.gradeable, f"live judge returned no parseable verdict: {verdict.notes}"
+    assert verdict.prompt_adherence in ADHERENCE
+    assert verdict.grounding in GROUNDING
+    for violation in verdict.violations:
+        assert violation.get("expected"), f"kept violation with no expected: {violation}"
+        assert violation.get("observed"), f"kept violation with no observed: {violation}"

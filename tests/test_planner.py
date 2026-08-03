@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from _online import online_key  # noqa: F401 — pytest fixture, used by name
 
 import agents.planner as planner_mod
 from agentlib.core import Result
@@ -159,3 +160,36 @@ class TestScriptedModel:
                             lambda *a, **k: Result(text='{"seed": "pkg', truncated=True))
         out = run_planner("do something", verbose=False)
         assert out.status == "failed"
+
+
+# --- online: a real model resolving the seed (HW4, T13b / CLAUDE.md §8) --------
+
+
+@pytest.mark.online
+def test_online_a_real_model_seed_produces_a_well_formed_plan(graph, online_key):
+    """One real model call on the planner's free-form path.
+
+    `TestScriptedModel` above pins the same path with a canned reply, which
+    proves the walk but never proves a live model can produce a seed this code
+    accepts — a scripted `Result` always parses, by construction. §8 wants that
+    gap covered, so this asks the real model against the synthetic repo the
+    `graph` fixture scans.
+
+    Asserted: the plan is STRUCTURALLY valid and its impact set is real — every
+    uid it names resolves to a node the scan actually found. Not asserted: which
+    seed the model picks. A live model may reasonably read "the b module" as
+    `pkg.b` or ask a question instead, and `needs_input` is a correct outcome
+    here (T6.2b), not a failure — so both are accepted and only a malformed plan
+    or a hallucinated component fails the test.
+    """
+    out = run_planner("please plan a change to the b module inside pkg",
+                      max_hops=2, verbose=False)
+
+    assert out.status in ("ok", "needs_input"), f"live planner failed: {out.notes}"
+    assert validate_plan(out.result) == []
+
+    if out.status == "ok":
+        impacted = out.result["impacted"]
+        assert impacted, "an ok plan with an empty impact set authorises nothing"
+        known = {resolve_uid(m) for m in ("pkg.a", "pkg.b", "pkg", "top")}
+        assert set(impacted) <= known, f"planner invented components: {impacted}"
