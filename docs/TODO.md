@@ -1022,12 +1022,20 @@ except the `evaluate_silence` body, which is yours by contract.
 
 ## Phase 13b — Test-convention sweep + regression verification (Dias)
 
-- [ ] Apply the online/offline convention (CLAUDE.md §8) to the HW1-HW3 suites that exercise the
+- [x] Apply the online/offline convention (CLAUDE.md §8) to the HW1-HW3 suites that exercise the
       agent through `run_agent` (at minimum `tests/test_planner.py`, `tests/test_apply_change.py`,
       `tests/test_monitor.py`) — at least one online test per suite, marked and skippable.
-- [ ] Run `executor.py`/`admin.py`/`service.py`/`main.py` against the refactored `loop.py` and
+      Existing offline tests untouched; the gate is the shared `tests/_online.py` fixture, which
+      treats a placeholder key as no key and never exports `.env` session-wide (decision #55).
+- [x] Run `executor.py`/`admin.py`/`service.py`/`main.py` against the refactored `loop.py` and
       confirm no code changes were needed on their side (contract #9). File a bug against Phase
       12 if the frozen return shape drifted anywhere.
+      **No drift found, and none of the four needed a change.** Pinned in
+      `tests/test_loop_contract.py`: the six keywords all four callers pass are still accepted,
+      the return carries exactly `{answer, steps, trace, stopped}` (+ `run_id` only with a run
+      log), every branch tag still fires, and `run_admin` drives the refactored loop end to end.
+      Whole suite: 301 passed, 5 skipped (online), 2 pre-existing Windows path failures in
+      `test_context.py` unrelated to HW4 — see the open questions below.
 
 **Depends on:** Phase 12 merged (needs the frozen `run_agent` contract to verify against).
 **Not on Alejandro.**
@@ -1062,3 +1070,38 @@ except the `evaluate_silence` body, which is yours by contract.
       run's visibility, that is a T9.4 column, not a filter in the poster.
 - [ ] Does an admin action get its own run record, or ride the run that requested it? Own record,
       leaning — an admin path with no separate trace is an audit gap. Decide in T11.3.
+
+### HW4
+
+Both found by the Phase 13b online tests, both in `agents/planner.py` (**Alejandro's file — filed,
+not fixed**, CLAUDE.md §1). Neither is visible offline: a scripted `Result` always carries a seed
+and always parses, so only a live call reaches them.
+
+- [ ] **The free-form seed path asks the model to name a component without showing it any.**
+      `_PROPOSE_INSTRUCTION` requires exactly one seed and forbids inventing files, but the prompt
+      carries only the request text — no node list, no graph. On a request that does not already
+      name the component ("plan a change to the b module inside pkg") the live cheap model
+      correctly returns `{"seed": "", "steps": []}` and the planner ends `failed`. Naming the
+      component ("pkg/b.py") resolves it every time. So the path works only when the caller
+      already knows the answer. Options: put the scanned node ids in the prompt, or return
+      `needs_input` (a question the user can answer) instead of `failed` when the seed is empty —
+      an empty seed is the model behaving correctly, not a defect.
+- [ ] **`_brace_slice` takes the last `}`, not the matching one.** `rfind("}")` means a single
+      stray trailing brace makes the slice unbalanced and an otherwise-good reply unparseable —
+      observed roughly one run in four on the cheap model:
+      `{"seed":"pkg/b.py","steps":[...]}}  \nfinal`. The planner then reports "could not parse a
+      seed/steps plan", which reads like a model failure and is a parser one. A brace-depth scan
+      from the first `{` fixes it. `tests/test_planner.py::test_online_...` currently **skips**
+      with a named reason on exactly this case rather than failing red on a file this branch does
+      not own; the skip turns into a real pass once the fix lands.
+
+- [ ] **Two suites still exercise the agent with no online test** (CLAUDE.md §8, "others as
+      needed" in the 13b row). Phase 13b covered the three the row names plus `test_admin.py`;
+      these two belong to their own owners:
+      `tests/test_orchestration.py` (Berat) drives both agents through the refactored loop, and
+      `tests/test_read_path.py` (Alejandro) says in its own docstring that it runs "the REAL
+      `run_agent` loop over the REAL tools" — both are exactly the surface §8 says a mocked model
+      cannot vouch for. `tests/_online.py::online_key` is there to be imported; it costs one
+      argument on the test.
+      `tests/test_smoke_hw1.py` is deliberately NOT on this list — §8 exempts the pre-refactor
+      suites, which keep validating the old path until it is retired.

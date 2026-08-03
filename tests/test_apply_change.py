@@ -20,8 +20,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from _online import online_key  # noqa: F401 — pytest fixture, used by name
 
 import tools.apply_change as ac
+from agentlib.loop import run_agent
+from agentlib.schemas import schema_for
 from agentlib.session import impact_scope
 
 
@@ -135,3 +138,49 @@ def _snapshot(root: Path) -> dict[str, str]:
     """Every file under `root`, path -> contents. The byte-identical witness."""
     return {str(p.relative_to(root)): p.read_text(encoding="utf-8")
             for p in root.rglob("*") if p.is_file()}
+
+
+# --- online: the real model reaching the gated tool (HW4, T13b / CLAUDE.md §8) -
+
+
+@pytest.mark.online
+def test_online_the_model_requests_the_gated_write_and_the_gate_declines(repo, online_key):
+    """One real model call, ending at the gate with a refusal.
+
+    Every other test here calls `apply_change` directly, which proves the
+    confinement logic but says nothing about whether the tool is *reachable*:
+    after the HW4 refactor the schema travels through `to_langchain_tool` and
+    `bind_tools` before a model ever sees it, and a schema that silently fails to
+    arrive is exactly the conversion bug §8 is aimed at. A direct call cannot
+    catch it; only a live model asking for the tool by name can.
+
+    Safe by two independent mechanisms, deliberately:
+      * the `repo` fixture has already repointed `_REPO_ROOT` at a tmp sandbox,
+        so even a landed write cannot touch the real repository;
+      * the gate DECLINES, so the tool body never runs at all.
+
+    The suite's byte-identical witness then holds for the same reason it does in
+    the refusal tests above — a declined write is not a write.
+    """
+    before = _snapshot(repo)
+    asked: list[tuple[str, dict]] = []
+
+    def decline(name: str, args: dict) -> bool:
+        asked.append((name, args))
+        return False
+
+    result = run_agent(
+        "Use the apply_change tool to edit the file pkg/mod.py so its entire "
+        "content is the single line: original = 2. Call the tool now.",
+        schemas=[schema_for(ac.apply_change)],
+        registry={"apply_change": ac.apply_change},
+        approve=decline,
+        verbose=False,
+    )
+
+    assert asked, ("the live model never requested apply_change — its schema did "
+                   "not reach the model through the framework conversion")
+    assert asked[0][0] == "apply_change"
+    assert "path" in asked[0][1], f"model called the tool without a path: {asked[0][1]}"
+    assert any(entry["branch"] == "declined" for entry in result["trace"])
+    assert _snapshot(repo) == before, "a declined write must leave every file untouched"

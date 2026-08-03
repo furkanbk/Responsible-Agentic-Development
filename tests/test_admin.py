@@ -10,7 +10,10 @@ provable offline.
 
 from __future__ import annotations
 
-from agentlib.session import SessionKey
+import pytest
+from _online import online_key  # noqa: F401 — pytest fixture, used by name
+
+from agentlib.session import SessionKey, current_impact_set
 from agents.admin import (
     ADMIN_TOOLS,
     admit,
@@ -80,3 +83,51 @@ class TestBriefAndTools:
     def test_promote_memory_missing_id_is_a_structured_error(self):
         out = promote_memory("no_such_memory")
         assert out["error"] == "memory_not_found"
+
+
+# --- online: the privileged path against a real model (HW4, T13b / §8) --------
+
+
+@pytest.mark.online
+def test_online_an_admitted_admin_run_reaches_a_real_model_and_writes_nothing(online_key):
+    """One real call down the privileged path, past both locks.
+
+    Every other test in this suite stops at `admit()`, which is the right place
+    to test a refusal — nothing downstream should run — but it means none of
+    them ever reaches the model, and after the HW4 refactor the admin's whole
+    toolset now travels through `to_langchain_tool`/`bind_tools` before a model
+    sees it. A registry that silently fails to arrive would leave every test here
+    green (§8).
+
+    Write-safe by construction rather than by luck: `run_admin` is called with
+    the default empty impact set, and decision #25 makes an empty set deny every
+    write, so even a model that decides to call `apply_change` or
+    `prune_graph_node` is refused by the tool itself — and the gate declines on
+    top of that.
+    """
+    seen_gate: list[str] = []
+
+    def decline(name: str, args: dict) -> bool:
+        seen_gate.append(name)
+        return False
+
+    out = run_admin(
+        "List what you know about the component tools.decisions. Do not change anything.",
+        identity=identity(), confirmed=True, approve=decline, verbose=False,
+    )
+
+    # The envelope contract holds whatever the model chose to do.
+    assert out.status in ("ok", "needs_input", "blocked", "failed")
+    assert out.agent == "admin"
+    if out.status == "ok":
+        assert "answer" in out.result
+        assert out.result["granted_impact"] == [], (
+            "the run was granted a write scope it never asked for")
+
+    # Ambient scope is restored after the run — a leaked impact set would let a
+    # later, unrelated run write.
+    assert current_impact_set() == ()
+
+    # Nothing gated slipped through: if the model reached for a write tool, the
+    # gate saw it and said no.
+    assert all(name in {"apply_change", "prune_graph_node"} for name in seen_gate)
