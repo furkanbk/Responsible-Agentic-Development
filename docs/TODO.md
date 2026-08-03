@@ -1094,3 +1094,14 @@ and always parses, so only a live call reaches them.
       from the first `{` fixes it. `tests/test_planner.py::test_online_...` currently **skips**
       with a named reason on exactly this case rather than failing red on a file this branch does
       not own; the skip turns into a real pass once the fix lands.
+
+- [ ] **Two suites still exercise the agent with no online test** (CLAUDE.md §8, "others as
+      needed" in the 13b row). Phase 13b covered the three the row names plus `test_admin.py`;
+      these two belong to their own owners:
+      `tests/test_orchestration.py` (Berat) drives both agents through the refactored loop, and
+      `tests/test_read_path.py` (Alejandro) says in its own docstring that it runs "the REAL
+      `run_agent` loop over the REAL tools" — both are exactly the surface §8 says a mocked model
+      cannot vouch for. `tests/_online.py::online_key` is there to be imported; it costs one
+      argument on the test.
+      `tests/test_smoke_hw1.py` is deliberately NOT on this list — §8 exempts the pre-refactor
+      suites, which keep validating the old path until it is retired.
