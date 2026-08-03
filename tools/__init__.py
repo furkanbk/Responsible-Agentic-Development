@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from agentlib.langchain_tools import build_langchain_tools
 from agentlib.schemas import schema_for
 
 from .decisions import (
@@ -29,6 +30,7 @@ from .graph_query import query_component_graph
 from .graph_write import prune_graph_node
 from .memory_tools import retrieve_memory, save_memory
 from .repo_scan import scan_repository_structure
+from .text_tools import diff_texts
 from .utility_tools import evaluate_expression
 
 # Every callable tool, in the order the model sees them. Reads and appends
@@ -49,6 +51,7 @@ TOOL_FUNCTIONS: list[Callable] = [
     verify_graph_integrity,
     prune_graph_node,
     evaluate_expression,
+    diff_texts,
 ]
 
 
@@ -65,7 +68,35 @@ def build_registry() -> tuple[list[dict[str, Any]], dict[str, Callable]]:
     return schemas, registry
 
 
+def build_langchain_registry() -> list:
+    """The same TOOL_FUNCTIONS, registered through the ONE conversion point.
+
+    HW4, decision #54. Every graph tool crosses into the framework here, in list
+    order (the order the model sees them), via
+    `agentlib.langchain_tools.build_langchain_tools` — which calls
+    `to_langchain_tool` per function (decision #50). No tool is hand-wrapped as a
+    LangChain `@tool`/`StructuredTool`: authors keep writing plain callables, and
+    this is where they become tools the model can call. `agentlib.loop.run_agent`
+    performs the identical conversion internally from its `registry` argument, so
+    its frozen signature (decision #49) is untouched; this surface makes the
+    conversion explicit and testable at the registry layer.
+
+    Invariant #25 holds by construction: the conversion reads only the parameters
+    the author already wrote, so no identity/scope argument can appear here that
+    was not already a real function parameter (none is — scope stays ambient).
+    """
+    return build_langchain_tools(TOOL_FUNCTIONS)
+
+
 # Module-level convenience: assembled once on import.
 SCHEMAS, REGISTRY = build_registry()
+LANGCHAIN_TOOLS = build_langchain_registry()
 
-__all__ = ["build_registry", "SCHEMAS", "REGISTRY", "TOOL_FUNCTIONS"]
+__all__ = [
+    "build_registry",
+    "build_langchain_registry",
+    "SCHEMAS",
+    "REGISTRY",
+    "LANGCHAIN_TOOLS",
+    "TOOL_FUNCTIONS",
+]

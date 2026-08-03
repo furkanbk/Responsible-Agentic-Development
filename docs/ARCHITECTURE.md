@@ -260,11 +260,30 @@ decision #21). The other three are ours and are the durable half.
   and skipped pending T1.2. The live-model integration run is T3.2.
 - **Status:** **done** (Phase 2, T2.5; scripted-model by design while Zen credits are pending)
 
+### `tools/text_tools.py` — line-diff utility (HW4 new tool #2)
+<!-- OWNER: Alejandro -->
+- **Owns:** `diff_texts(before, after, mode: Literal["unified","ndiff"]) -> dict`
+- **What:** computes the line diff between two text blobs via `difflib` — the second
+  framework-integrated tool of the HW4 requirement (Berat's `evaluate_expression` is #1). Pairs
+  with `apply_change`: one lands an edit, the other shows exactly what an edit changes instead
+  of asserting it in prose.
+- **Read-only → ungated** (CLAUDE.md §5): comparing two strings damages nothing.
+- **Contract:** `{"mode": str, "changed": bool, "diff": [str]}` on success (`changed=False`,
+  empty `diff` when identical); `{"error": "input_too_large", "details": [str]}` over a 200k-char
+  combined cap (own branch — never a partial diff dressed as complete).
+- **Status:** **done** (Phase 13a)
+
 ### `tools/__init__.py` — registry + schema assembly
-<!-- OWNER: Berat -->
+<!-- OWNER: Berat; HW4 registry-assembly additions by Alejandro (Phase 13a, decision #54) -->
 - **Owns:** `build_registry() -> (schemas, registry)`, module-level `SCHEMAS` / `REGISTRY`.
   Imports every tool stub so the loop runs end-to-end from day one.
-- **Status:** **done** (Phase 0)
+- **HW4 (decision #54):** `build_langchain_registry() -> list[StructuredTool]` and module-level
+  `LANGCHAIN_TOOLS` — the whole `TOOL_FUNCTIONS` list run through the one conversion point
+  (`agentlib.langchain_tools.build_langchain_tools` → `to_langchain_tool`, decision #50). This
+  is the explicit, testable registration surface; `run_agent` does the identical conversion
+  internally from its `registry` arg, so its frozen signature (#49) is untouched. No tool body
+  or signature changed — all ten convert cleanly.
+- **Status:** **done** (Phase 0); LangChain registration surface added (Phase 13a)
 
 ### `main.py` — CLI entry point
 <!-- OWNER: Berat -->
@@ -421,6 +440,7 @@ reason #41/#46/#47 were pre-allocated in HW3.
 | 51 | 2026-08-02 | agentlib.graph_state | State schema is `AgentState`, a `TypedDict` (`messages` + `add_messages` reducer, `trace`, `signatures`, `declined_signatures`, `step`, `stopped`, `answer`) | An ad-hoc dict threaded through node functions | Explicit state schema is the professor's stated requirement, not just style. The fields are exactly what `loop.py`'s local variables already tracked — the schema documents an existing shape, it does not invent a new one. |
 | 52 | 2026-08-02 | agentlib.graph | The approval gate stays the existing synchronous `approve(name, args) -> bool` callback; LangGraph's native `interrupt()` is **not** adopted in this increment | Migrating the gate onto `interrupt()` + a checkpointer | HW3 already solved the async/human-in-the-loop case one layer up (`agentlib/approval.py`, `channel/*`, decision #41) for the channel path specifically. Swapping the gate mechanism inside the loop itself would ripple into `service.py`/`channel/*` for a requirement ("explicit state schema", "framework-integrated tools") that doesn't ask for it. Revisit if/when the channel path itself moves onto LangGraph. |
 | 53 | 2026-08-02 | repo-wide / CLAUDE.md §4 | The HW1 no-framework rule is lifted for `langgraph`, `langchain`, `langchain-openai` **only**, recorded as a CLAUDE.md §4 amendment | Lifting the rule wholesale; forking a separate "HW4 rules" document | Same pattern as the §7.1 HW2 amendment (lifted the multi-agent prohibition for exactly what HW2 named). LlamaIndex, CrewAI, AutoGen, PydanticAI, Haystack, vector DBs and external code-indexers stay out of scope — a new dependency still needs a decision record, not just an opportunity (CLAUDE.md §4). |
+| 54 | 2026-08-03 | tools/__init__.py, tools/text_tools.py | The conversion sweep is a **registry-assembly** change: `build_langchain_registry()` runs the whole `TOOL_FUNCTIONS` list through `to_langchain_tool` (#50) and exposes `LANGCHAIN_TOOLS`, and the second new tool (`diff_texts`) is registered by adding it to that list — **no tool body or signature is touched**. The one online test drives the real model to *select* the new tool through the compiled graph | Hand-wrapping each of the eight graph tools as a `@tool`/`StructuredTool` in its own module; making the online test assert only that the tool *runs* once named | All ten tools already convert cleanly through the single point (verified), so a per-file rewrite would only re-introduce the eight-places-to-drift risk decision #50 exists to remove — the sweep belongs at the one assembly point, not scattered. Invariant #25 then holds by construction across the whole registry: conversion reads only parameters the author wrote, and none of them is identity or scope (a test asserts no `author_id`/`impacted`/… field appears). The online test asserts *selection*, not just execution, because the framework-conversion bug §8 targets is a schema that never reaches the model — a test that hand-picks the tool would pass even then. `diff_texts` pairs with `apply_change` (show the change vs. land it) and is ungated because a diff is read-only (CLAUDE.md §5), the same reason `evaluate_expression` is. |
 | 55 | 2026-08-02 | tests/_online.py, tests/test_loop_contract.py | The §8 online gate is **one shared fixture**, and it (a) treats a placeholder key as *no key*, (b) reads `.env` **without exporting it**, and (c) exports the real key only for the duration of the test that asked. Contract #9 gets its own suite, separate from `test_graph_agent.py` | A per-suite `skipif(not os.environ.get("OPENCODE_API_KEY"))`; a module-level `load_dotenv()`; folding the contract assertions into the graph-internals suite | Three failure modes, each found by hitting it. **(a)** `.env.example` ships `OPENCODE_API_KEY=sk-...` and a half-configured checkout copies it verbatim; that string is truthy, so a naive check *runs* the online test and reports the provider's 401 as a red test. Absent key is a **skip** — the suite has nothing to say about correctness when it cannot reach a model, and only a real failure should be red. **(b)** A module-level `load_dotenv()` in a shared helper exports the placeholder for the whole session and silently flipped `test_graph_agent.py`'s own skip decision, turning its online test red from an unrelated file — so the decision reads `.env` via `dotenv_values` and mutates nothing. **(c)** `agentlib.core` reads the key from `os.environ` at call time, so it must be exported *somewhere*; a fixture scopes that to one test and restores the previous value, which is the smallest window that still works. The contract suite is separate because it asserts a different thing: `test_graph_agent.py` tests the graph's internals (state schema, tool wrapping, routing), `test_loop_contract.py` tests only what crosses the boundary four other files depend on — signature keywords, return keys, branch tags, and `run_id`'s presence rule. If a later refactor drifts the shape, four callers break at once and the failure should name the contract, not surface as four unrelated bugs. |
 
 ---
