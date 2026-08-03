@@ -1006,15 +1006,26 @@ except the `evaluate_silence` body, which is yours by contract.
 
 ## Phase 13a — Tool conversion sweep + second new tool (Alejandro)
 
-- [ ] Convert `tools/repo_scan.py`, `tools/graph_query.py`, `tools/decisions.py`,
+- [x] Convert `tools/repo_scan.py`, `tools/graph_query.py`, `tools/decisions.py`,
       `tools/graph_write.py`, `tools/memory_tools.py`, `tools/apply_change.py`'s *registration*
       through `to_langchain_tool` (T12.2) — tool bodies untouched, this is a registry-assembly
       change in `tools/__init__.py`, not a rewrite of the tools themselves.
-- [ ] One more new tool (new-tool #2 of the HW4 requirement's ≥2), framework-integrated the same
+      **Done:** `tools/__init__.py::build_langchain_registry()` runs the whole `TOOL_FUNCTIONS`
+      list through the one conversion point and exposes it as `LANGCHAIN_TOOLS` (decision #54).
+      All ten tools convert cleanly — no tool body or signature was touched, so no contract
+      change was needed on any owner's file.
+- [x] One more new tool (new-tool #2 of the HW4 requirement's ≥2), framework-integrated the same
       way, with an action-shaped name and a when/when-not docstring (same bar as HW1's tools).
-- [ ] `tests/test_langchain_tools.py` (or extend an existing suite) verifying each converted
+      **Done:** `tools/text_tools.py::diff_texts(before, after, mode)` — a read-only, ungated
+      line-diff (`difflib`), `Literal` mode → enum, pairs with `apply_change`. Registered in
+      `TOOL_FUNCTIONS`, so the live agent is offered it via `bind_tools`.
+- [x] `tests/test_langchain_tools.py` (or extend an existing suite) verifying each converted
       tool's LangChain schema matches what `schema_for` would have derived (enum fidelity,
       required-ness), plus the same for the new tool.
+      **Done:** `tests/test_tool_conversion.py` — 9 offline (whole registry converts in order,
+      description + arg schema preserved, **no identity/scope arg leaks**, invariant #25; `Literal`
+      still derives an enum; `diff_texts` behaviour + graph dispatch) + 1 online (§8): the real
+      model, offered the registry, selects `diff_texts` through the compiled graph.
 
 **Depends on:** Phase 12 merged (`agentlib/langchain_tools.py` must exist). **Not on Dias.**
 
