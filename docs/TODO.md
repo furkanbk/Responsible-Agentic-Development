@@ -1022,12 +1022,20 @@ except the `evaluate_silence` body, which is yours by contract.
 
 ## Phase 13b — Test-convention sweep + regression verification (Dias)
 
-- [ ] Apply the online/offline convention (CLAUDE.md §8) to the HW1-HW3 suites that exercise the
+- [x] Apply the online/offline convention (CLAUDE.md §8) to the HW1-HW3 suites that exercise the
       agent through `run_agent` (at minimum `tests/test_planner.py`, `tests/test_apply_change.py`,
       `tests/test_monitor.py`) — at least one online test per suite, marked and skippable.
-- [ ] Run `executor.py`/`admin.py`/`service.py`/`main.py` against the refactored `loop.py` and
+      Existing offline tests untouched; the gate is the shared `tests/_online.py` fixture, which
+      treats a placeholder key as no key and never exports `.env` session-wide (decision #55).
+- [x] Run `executor.py`/`admin.py`/`service.py`/`main.py` against the refactored `loop.py` and
       confirm no code changes were needed on their side (contract #9). File a bug against Phase
       12 if the frozen return shape drifted anywhere.
+      **No drift found, and none of the four needed a change.** Pinned in
+      `tests/test_loop_contract.py`: the six keywords all four callers pass are still accepted,
+      the return carries exactly `{answer, steps, trace, stopped}` (+ `run_id` only with a run
+      log), every branch tag still fires, and `run_admin` drives the refactored loop end to end.
+      Whole suite: 301 passed, 5 skipped (online), 2 pre-existing Windows path failures in
+      `test_context.py` unrelated to HW4 — see the open questions below.
 
 **Depends on:** Phase 12 merged (needs the frozen `run_agent` contract to verify against).
 **Not on Alejandro.**
