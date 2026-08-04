@@ -175,6 +175,70 @@ the LangGraph path — planner, monitor, demos all call it directly), `agentlib/
 `agentlib/session.py`, `agentlib/runlog.py`, `agentlib/approval.py`, all of `channel/*` and
 `triggers/*` (decision #52 — the gate stays the existing callback, not `interrupt()`).
 
+### HW5 (new surface)
+
+| Area | Files | Owner | Phase |
+|---|---|---|---|
+| Authored node summaries (overlay table + helpers) | `overlay/db.py`, `overlay/__init__.py` | **Berat Furkan Kocak** | 14A — **blocking** |
+| Chunk / Hit / Anchor / EvalCase contract | `retrieval/types.py`, `retrieval/__init__.py` | **Berat Furkan Kocak** | 14A — **blocking** |
+| `search_corpus` stub contract + registration | `tools/retrieval_tools.py`, `tools/__init__.py` | **Berat Furkan Kocak** | 14A — **blocking** |
+| Postgres infra, DSN plumbing, test isolation | `docker-compose.yml`, `.env.example`, `requirements.txt`, `tests/conftest.py` | **Berat Furkan Kocak** | 14A — **blocking** |
+| Repo docs | `docs/ARCHITECTURE.md`, `docs/TODO.md`, `.claude/CLAUDE.md`, `README.md` | **Berat Furkan Kocak** | 14A / 14D |
+| Retrieval layer (chunker, embed, cache, store, bm25, fuse, rerank, search, index) | `retrieval/*.py` | **Berat Furkan Kocak** | 14B |
+| README § Part 1 (retrieval design + before/after) | `README.md` | **Berat Furkan Kocak** | 14B |
+| README § Part 2 (retrieval metrics + interpretation) | `README.md` | **Alejandro Ramírez Trueba** | 14C |
+| README § Part 3 (generation metrics + judge bias) | `README.md` | **Dias Sarkytbaev** | 14D |
+| README § Part 4 (assembly + what the tables disagree about) | `README.md` | **Berat Furkan Kocak** | 14E |
+| Bootstrap summarizer + staleness surfacing | `overlay/summarize.py` | **Berat Furkan Kocak** | 14B |
+| `search_corpus` body | `tools/retrieval_tools.py` | **Berat Furkan Kocak** | 14B |
+| Online retrieval tests (10, live embeddings + live Postgres) | `tests/test_retrieval_online.py` | **Berat Furkan Kocak** | 14B |
+| Qualitative before/after over ≥8 queries | README (T14.8) | **Berat Furkan Kocak** | 14B |
+| **Planner seed via retrieval** (closes the filed HW4 bug) | `agents/planner.py` | **Alejandro Ramírez Trueba** | 14C |
+| **Eval set** — ≥20 realistic cases, ≥5 failure categories, one out-of-corpus | `eval/cases.json` | **Alejandro Ramírez Trueba** | 14C |
+| **Rank-aware retrieval metrics** (all five) | `eval/retrieval_metrics.py` | **Alejandro Ramírez Trueba** | 14C |
+| **k-sweep + rerank on/off harness** | `eval/run_eval.py` | **Alejandro Ramírez Trueba** | 14C |
+| **Retrieval-metric tests** | `tests/test_retrieval_metrics.py` | **Alejandro Ramírez Trueba** | 14C |
+| **Judged generation metrics** (hand-rolled, cached) | `eval/generation_metrics.py` | **Dias Sarkytbaev** | 14D |
+| **Generation eval cases + failure-category tagging** | `eval/gen_cases.json` | **Dias Sarkytbaev** | 14D |
+| **Scorer tests** | `tests/test_eval_scorers.py` | **Dias Sarkytbaev** | 14D |
+
+**Why this split — it differs from HW2-HW4, deliberately.** The course assignment is already cut
+into three parts with a hard dependency chain, so the split follows the assignment rather than the
+usual read-path/safety division:
+
+- **Berat takes the whole of Part 1** (Phases 14A + 14B) — contracts *and* the retrieval layer.
+  Splitting contract-from-implementation made sense when two people then built on it in parallel;
+  here the same person writes both, so the seam between them buys nothing and costs a merge.
+- **Alejandro takes Part 2**, the rank-aware retrieval metrics.
+- **Dias takes Part 3**, the judged generation metrics.
+
+**Ordering across 14C and 14D.** The rank-aware metrics come first and the judged ones second,
+and this is a real dependency rather than a preference: the first five cost nothing and reproduce
+exactly, so a retrieval bug caught in 14C saves the price of every judged metric in 14D. Alejandro
+should not wait on Dias, and Dias should not start before 14C's tables look sane.
+
+**`README.md` is the one file all three touch, and it is carved up by section, not shared.**
+`README.md` is Berat's under the HW1 ownership map, and that stands for everything outside
+§ "HW5 — Retrieval and evaluation". Inside it, each owner writes **their own numbered Part** as
+the last task of their phase: Part 1 → Berat (T14.8b, done), Part 2 → Alejandro (T14.12b),
+Part 3 → Dias (T14.14b), Part 4 → Berat assembling (T14.15). The placeholder subsections are
+already in place, so the edits are disjoint and will not conflict.
+
+The reason it is split rather than left with one author: the person who ran the numbers is the
+only one who can say what they mean. A single author writing up two other people's tables
+produces a report that describes what was expected instead of what happened — and Part 1 already
+had to retract one asserted finding that the measurement reversed.
+
+**Working in parallel.** Contract #10 (`Chunk`/`Hit`/`Anchor`/`EvalCase`) is the entire input
+surface for both metric phases. Neither needs a running Postgres to write scorers — a handful of
+hand-built `Hit`s exercises all five rank metrics offline, and `retrieval.types` imports no
+`psycopg`. `retrieval.search.search(...)` is the only function either phase calls into.
+
+**Deliberately untouched in HW5:** `agentlib/*` (retrieval is a tool, not a loop change — the
+frozen `run_agent` contract #9 is not reopened), `store/knowledge_graph.json` and its scanner,
+the sqlite overlay's existing tables, all of `channel/*` and `triggers/*`, and `monitor/judge.py`
+(the eval harness follows its pattern; it does not modify it).
+
 ---
 
 ## Contracts frozen for parallel work
@@ -324,10 +388,42 @@ becomes a LangChain tool; nobody hand-writes a `@tool`-decorated function agains
 (`ok|error|declined|invalid_args`) do not change. This is what makes Dias's Phase 13b a
 verification pass instead of a rewrite.
 
+**10. `Chunk` / `Hit` / `Anchor` / `EvalCase`** — `retrieval/types.py`, frozen in T14.2. Both
+the retrieval layer (14B) and the eval harness (14C) build against these, so neither owns them:
+
+```python
+Chunk(chunk_id, kind: "component"|"decision"|"doc", text, symbol_uid, symbol,
+      heading_path, source_path, content_sha, visibility)   # frozen dataclass
+Hit(chunk, rank, dense_score, bm25_score, rrf_score, rerank_score)
+Anchor(kind, ref, symbol)         # ref: decision number | heading path | symbol_uid
+EvalCase(case_id, query, category, golden_answer, anchors)  # .out_of_corpus == not anchors
+```
+
+`Hit.rank` is 1-based and is the position the **retriever** returned — not a repacked position
+(#59). Every chunk carries `symbol_uid`, so a hit joins the existing uid space (#22) and can be
+handed straight to `retrieve_decisions` or the impact walk without a second lookup.
+
+**11. `search_corpus`** — `tools/retrieval_tools.py`, stub contract frozen in T14.3:
+
+```python
+search_corpus(query: str, k: int = 5, rerank: bool = True,
+              source: Literal["all","components","decisions","docs"] = "all") -> dict
+# {"query","k","reranked","source","count",
+#  "results": [{chunk_id, kind, symbol_uid, symbol, heading_path,
+#               source_path, rank, score, text}, ...]}       # RETRIEVER order
+# {"error": "index_unavailable"|"index_empty"|"invalid_args"}
+```
+
+No identity or scope parameter, ever (#25) — `current_user()` is ambient and the visibility
+predicate is a `WHERE` clause (#24). `rerank` is deliberately both an agent-facing control and
+the seam the eval harness toggles, so the comparison measures the path the agent actually uses.
+
 **Working without the other pieces.** Alejandro does not need a running graph to convert a
 tool — write the function, call `to_langchain_tool(fn)` in a unit test, assert the derived
 schema. Dias does not need to read `agentlib/graph.py` at all — `run_agent`'s contract (#9) is
-everything the existing test suites already assume.
+everything the existing test suites already assume. For HW5, Dias does not need Alejandro's
+retriever to write the scorers: contract #10 is the whole input surface, and a handful of
+hand-built `Hit`s exercises all five metrics offline.
 
 ---
 
@@ -387,6 +483,31 @@ everything the existing test suites already assume.
 | Explicit state schema (not an ad-hoc dict) | `agentlib/graph_state.py::AgentState` (`TypedDict`) | 12 | Berat |
 | ≥2 tools added, framework-integrated, model decides when to call | `tools/utility_tools.py` (Berat, #1) + Phase 13a's second tool (Alejandro, #2) — both registered through `to_langchain_tool` and offered via `bind_tools`, never hardcoded routing | 12, 13a | Berat + **Alejandro** |
 | New tests per functionality, ≥1 online per suite (CLAUDE.md §8) | `tests/test_graph_agent.py` (Phase 12); remaining suites (Phase 13b) | 12, 13b | Berat + **Dias** |
+
+### HW5
+
+| HW5 requirement | Where it is satisfied | Phase | Owner |
+|---|---|---|---|
+| Corpus chosen and chunked; strategy documented (size, overlap, boundaries) and justified | `retrieval/chunker.py`; rationale in T14.6 + README — heading-path prefixes, atomic table rows, overlap only on overflow | 14B | Berat |
+| Dense vector search | `retrieval/store.py` (pgvector, exact scan) + `retrieval/embed.py` | 14B | Berat |
+| BM25 lexical search over the same corpus | `retrieval/bm25.py` — hand-written Okapi; Postgres FTS rejected for having no IDF (#58) | 14B | Berat |
+| RRF fusion; k and fusion constant documented | `retrieval/fuse.py` (k=60, sweep reported) | 14B | Berat |
+| Reranking; depth documented (retrieve N → top-k) and what the latency buys | `retrieval/rerank.py` — retrieve 30/arm → fuse → rerank to k; measured ~4.0s uncached vs ~60ms | 14B | Berat |
+| Retrieval is a **tool the agent may call**, not a fixed pipeline step; agent can re-query | `tools/retrieval_tools.py::search_corpus` (#60); re-query works via `detect_stall` (#10) allowing refined repeats | 14A, 14B | Berat |
+| Qualitative before/after over ≥8 queries, naming which failure modes each stage fixed | T14.8 + README § Part 1 — 10 queries × 4 configs, **including the 2 that regressed** | 14B | Berat |
+| Golden chunk ids / content anchors per eval case; empty golden for out-of-corpus | `eval/cases.json`, `Anchor`/`EvalCase` (contract #10) | 14A, 14C | Berat + **Alejandro** |
+| All five rank-aware metrics (hit rate@k, precision@k, recall@k, MRR, nDCG@k) | `eval/retrieval_metrics.py` | 14C | **Alejandro** |
+| Metrics read retriever order, not a repacked one | `retrieval/search.py` returns retriever order; `pack_for_llm` is downstream (#59) | 14B, 14C | Berat + **Alejandro** |
+| Empty-golden cases undefined, not zero — excluded and counted separately | `eval/retrieval_metrics.py`, `EvalCase.out_of_corpus` | 14C | **Alejandro** |
+| k trade-off measured at >1 k, not asserted | `eval/run_eval.py` (k = 3/5/10) | 14C | **Alejandro** |
+| Rerank on/off comparison through a real seam | `rerank: bool` on `search_corpus` and `search()` | 14B, 14C | Berat + **Alejandro** |
+| ≥20 realistic eval cases, tagged across ≥5 failure categories, ≥1 out-of-corpus | `eval/cases.json`, `eval/gen_cases.json` | 14C, 14D | **Alejandro** + **Dias** |
+| ≥3 of 4 judged metrics (faithfulness, answer relevance, context precision, context recall) | `eval/generation_metrics.py` | 14D | **Dias** |
+| Judge choice documented; judged runs reproducible/cached | Hand-rolled on `monitor/judge.py`'s pattern (#61); disk-cached | 14D | **Dias** |
+| Judge bias acknowledged and addressed | T14.14 + README | 14D | **Dias** |
+| Scorers unit-tested with eval cases as fixtures | `tests/test_retrieval_metrics.py`, `tests/test_eval_scorers.py` | 14C, 14D | **Alejandro** + **Dias** |
+| Report: retrieval design, both metric tables, per-category breakdown, disagreements | README — each owner writes their own part (T14.8b / T14.12b / T14.14b); Berat assembles and writes the disagreements (T14.15) | 14B, 14C, 14D, 14E | **all three** |
+| Clean separation between eval harness and agent code | `eval/` imports `retrieval/`, never the reverse | 14C, 14D | **Alejandro** + **Dias** |
 
 ---
 
@@ -1053,6 +1174,342 @@ except the `evaluate_silence` body, which is yours by contract.
 
 ---
 
+# HW5
+
+> **The classroom calls this assignment "HW2"; this repo calls it HW5.** The course numbers
+> RAG/evaluation as its second homework; this repo has already had four homeworks on the same
+> codebase, and "HW2" here is the scoped-memory/planner/executor work in Phases 4-8, which closed
+> long ago. **"Implement HW2", "the HW2 retrieval layer", "HW2 Part 1/2/3" and the pasted HW2
+> brief all mean this section.** The course's parts map onto phases as:
+>
+> | Course | Here | Owner |
+> |---|---|---|
+> | Part 1 — Retrieval layer | Phases 14A + 14B | Berat |
+> | Part 2 — Retrieval metrics | Phase 14C | Alejandro |
+> | Part 3 — Generation metrics | Phase 14D | Dias |
+> | Part 4 — Report | Phase 14E | **all three** — each writes their own section; Berat assembles |
+
+A retrieval layer, and then the harness that says with numbers whether it helped.
+
+The gap this closes is the one `ARCHITECTURE.md` §6 has carried since HW1: *"retrieval over the
+graph — currently exact lookup only."* `query_component_graph` needs a dotted module id and
+`retrieve_decisions` needs an exact `symbol_uid`, so a request phrased the way people phrase them
+— *"implement a better title for the main page"* — matches nothing. The concrete cost is already
+filed as an open HW4 item: `agents/planner.py::_PROPOSE_INSTRUCTION` asks the model to name a
+component **without showing it any node list**, the live cheap model returns an empty seed, and
+`run_planner` returns `failed`. The fix filed against it was "put node ids in the prompt." T14.10
+is the better fix.
+
+**What the corpus is.** Not generic documents — the codebase describing itself. A new authored
+`node_summaries` table holds one card per module and per symbol: what it is, what it owns, when
+you would touch it. Those cards, plus the 55 existing decision records, plus heading-aware
+sections of the repo's own markdown, are the ~500-700 chunks retrieval searches. 73 module cards
+alone would have been too few to measure anything — hit rate@10 over 73 chunks returns 14% of the
+corpus and saturates.
+
+**One dependency rule changes.** CLAUDE.md §4's "vector databases, embedding services" ban is
+lifted for `psycopg` + `pgvector` and OpenRouter's embeddings endpoint, and §7.1's "retrieval over
+the graph" ban is lifted for what HW5 names — decision #56, same narrow-amendment pattern as HW2's
+§7.1 and HW4's §4. **What stays hand-written is what is being graded:** BM25, RRF, the reranker,
+and all five rank metrics. Ragas and DeepEval stay out (#61).
+
+**Nothing durable moves.** Postgres holds a *derived* index that may be dropped and rebuilt at
+will. The authored overlay stays in sqlite under `store/` — decision #62 exists to refuse the
+consolidation that a running database makes look free.
+
+---
+
+## Phase 14A — Retrieval contracts + infra (Berat) — **blocking, do first**
+
+Stubs and schemas only, same move as T0.8, T6.1, T9.0 and Phase 12: it is the reason HW5
+serialises exactly once.
+
+### T14.1 — Authored node summaries
+
+- [x] `overlay/db.py` — `node_summaries` DDL, PK `(symbol_uid, symbol)`, `symbol = ''` for the
+      module card. `upsert_node_summary`, `query_node_summaries`, `all_summary_uids`,
+      `stale_summaries(conn, current_sha)`. Re-exported from `overlay/__init__.py`.
+- [x] UPSERT, not append-only — a summary is a current description, not a historical claim, and
+      retained superseded wordings would fill the corpus with near-duplicates of itself (#57).
+- [x] `stale_summaries` returns cards whose file **changed**; a uid absent from the mapping is an
+      **orphan**, a different signal, and is not returned there.
+
+### T14.2 — The chunk contract (frozen)
+
+- [x] `retrieval/types.py` — `Chunk`, `Hit`, `Anchor`, `EvalCase` (frozen dataclasses),
+      `ChunkKind`, `KINDS`. Contract **#10**, below.
+- [x] `Hit.rank` is the **retriever's** position, and `EvalCase.out_of_corpus` is `not anchors`.
+
+### T14.3 — `search_corpus` stub contract
+
+- [x] `tools/retrieval_tools.py` — signature, when/when-not docstring, return + error shapes.
+      Body raises `NotImplementedError` (T14.6 is Alejandro's). Contract **#11**, below.
+- [x] Registered in `tools/__init__.py::TOOL_FUNCTIONS`, **ahead of** the two exact lookups:
+      ranked guess finds the name, exact join answers about it. Converts cleanly through
+      `to_langchain_tool` with no identity/scope parameter (#25, #50).
+
+### T14.4 — Infra + test isolation
+
+- [x] `docker-compose.yml` — pgvector only, bound to `127.0.0.1:5433` so it can never collide
+      with a local Postgres. The agent stays on the host.
+- [x] `RADF_PG_DSN`, `RADF_RETRIEVAL_CACHE`, `OPENROUTER_API_KEY`, `RADF_EMBED_MODEL` documented
+      in `.env.example`. `psycopg[binary]` added to `requirements.txt`.
+- [x] `tests/conftest.py` — `RADF_RETRIEVAL_CACHE` joins the autouse `isolate_stores` redirect;
+      a new `pg_dsn` fixture isolates by **schema** (Postgres is one shared service, not a file)
+      and **skips** when the container is down or `psycopg` is missing, so the offline suite keeps
+      passing with no Docker. `public` stays second on the `search_path` — the `vector` type
+      installs there and a test-schema-only path cannot resolve `vector(1536)`.
+
+### T14.5 — Docs
+
+- [x] Decisions **#56-#62** (ARCHITECTURE.md), CLAUDE.md **§4 HW5 amendment** and **§7.3**
+      (§7.1 listed "retrieval over the graph" as out of scope — left alone, the file would
+      contradict itself), ARCHITECTURE.md §2 store table, §3 component entries, §4 data contracts.
+
+**Depends on:** nothing. **Blocks:** 14B, 14C.
+
+---
+
+## Phase 14B — The retrieval layer, Part 1 (Berat) — **DONE**
+
+### T14.6 — The retrieval layer
+
+- [x] `retrieval/chunker.py` — three chunk kinds into one index. Doc chunking splits on
+      `##`/`###` and **carries the full heading path as a prefix on every chunk**; without it a
+      chunk reading *"JSON, because it is diffable"* is unretrievable by any query not already
+      using those words. **Markdown table rows are atomic** — `ARCHITECTURE.md`'s decision log is
+      a table where one row is one decision, and fixed-size chunking severs `decision` from
+      `rationale`. `MAX_CHARS=1200`, overlap 15% **only** when a section overflows: an
+      unconditional overlap on already-atomic units manufactures the near-duplicate noise the
+      reranker handles worst, purely to satisfy a default. Fenced code blocks never split.
+- [x] `retrieval/embed.py` — `text-embedding-3-small` via OpenRouter over `urllib` (the §4
+      amendment allowed an endpoint, not a client library), batched 64, disk-cached by
+      `sha256(model+text)`. **Measured:** 1536-dim; 952 chunks ≈ 115k tokens ≈ **$0.002** for a
+      full re-index, 41s wall.
+- [x] `retrieval/store.py` — pgvector `chunks` table, `CREATE EXTENSION IF NOT EXISTS vector` on
+      connect (schema creation in one place, same rule as `overlay/db.py::init_db`). Exact scan,
+      no HNSW/IVFFlat: ~950 chunks does not warrant approximation, and saying so is a stronger
+      justification than a copy-pasted `lists=100`. `<=>` is a *distance* and is converted to a
+      similarity before it reaches the fuser.
+- [x] `retrieval/bm25.py` — hand-written Okapi, `k1=1.2`, `b=0.75`, same token class as
+      `overlay/memory.py::_tokens` but list-valued (BM25 needs tf; that function returns a set).
+      **Not** `ts_rank_cd` — no IDF (#58).
+- [x] `retrieval/fuse.py` — RRF, k=60, with the constant's effect documented: K controls how
+      sharply rank 1 outweighs rank 10, and a low K makes fusion "whichever arm is most confident
+      wins", which defeats running two. Deterministic tie-break so nDCG reproduces.
+- [x] `retrieval/rerank.py` — LLM reranker on `CHEAP` over the top 30, into three **named** bands
+      (`answers`/`related`/`unrelated`) rather than a 0-10 score (#37). Cached on
+      `(model, query, candidate ids)`.
+- [x] `retrieval/search.py` — `search(query, *, k, rerank, source, weights, conn) -> list[Hit]`;
+      retrieve 30 per arm → fuse → rerank to k. **Returns retriever order**; `pack_for_llm` is a
+      separate downstream function (#59). A dead embeddings endpoint degrades to lexical-only
+      rather than failing the search, and the `Hit` records that it did.
+- [x] `retrieval/index.py` — `python -m retrieval.index [--dry-run] [--kinds] [--no-cache]`.
+      Replaces the index wholesale — #16's rule applied to a derived store.
+- [x] `tools/retrieval_tools.py::search_corpus` body — `k` bounds, `source` validation, and the
+      three error branches. `reranked` reports what **happened**, not what was asked for.
+- [x] Visibility applied as a `WHERE` clause on the same query as the vector scan, from
+      `session.current_user()` — on **both** arms, since a lexical arm reading rows the dense arm
+      cannot would leak them through the fused ranking (#24, #25).
+
+### T14.7 — Bootstrap summarizer + staleness
+
+- [x] `overlay/summarize.py` — walks `store/knowledge_graph.json`, reads each node's source, and
+      emits one module card plus one card per symbol **the scanner declared** (model-proposed
+      names absent from that list are dropped — model proposes, code decides, #38). One `CHEAP`
+      call per node, idempotent on `content_sha`. **Run: 57 nodes → 342 cards, 0 failures.**
+- [x] Uses a brace-depth scan, not `rfind("}")` — the defect filed against
+      `agents/planner.py::_brace_slice` would have cost roughly one node in four here.
+- [ ] Surface stale cards from `tools/decisions.py::verify_graph_integrity` alongside orphans.
+      `stale_summaries()` exists and is exercised; the wiring into the integrity tool is left for
+      that file's owner (CLAUDE.md §1).
+
+### T14.8 — Qualitative before/after (≥8 queries) — **DONE**
+
+- [x] **10 queries × 4 configurations** (dense-only, BM25-only, RRF, RRF+rerank) tabulated in the
+      README § "Part 1 — Before/after over 10 queries", **including the queries that did not
+      improve and the two that regressed**. Ablation runs through `search(..., weights=(1,0))` /
+      `(0,1)`, so single-arm rows use the real path rather than a separate code branch.
+- [x] **A correction to an earlier claim in this file.** An earlier draft recorded that
+      `impact_scope` was rescued at rank 1 by BM25/IDF while the dense arm ranked generic "scope"
+      prose above it. Measured, it is **the other way round**: dense returns
+      `agentlib.session > impact_scope` at rank 1 and BM25 returns `ARCHITECTURE.md` §7 prose.
+      The finding that replaces it is more interesting and is the headline of the write-up:
+      **BM25 is the weaker arm on this corpus.** Component cards carry the identifier as their
+      title so a bare-identifier query embeds almost directly onto the right card, and these
+      identifiers are *not rare* here — `impact_scope` runs through `TODO.md` and
+      `ARCHITECTURE.md` prose — so IDF never buys the lexical arm the edge the literature
+      predicts. It still earns its place (one query only it got), but it contributes less than
+      expected, and saying so is the honest result.
+- [x] Other findings recorded: RRF **regressed** 2 of 10 (it demotes a confidently-correct single
+      arm, because fusing by position rewards agreement); reranking fixed 3 and broke 1 at ~4.0s
+      vs ~60ms; near-duplicate noise **survived every stage** (no MMR/diversity penalty is
+      implemented — named as a limitation); out-of-corpus returns confident junk at every stage,
+      which is why empty-golden cases exist.
+- [x] One apparent retrieval failure was **corpus staleness**, not ranking: `RRF` matched nothing
+      useful until the graph was re-scanned and re-summarised (`retrieval/` post-dated the last
+      scan, so those modules had no cards at all). 88 nodes, 57 unchanged correctly skipped on
+      `content_sha`. The concrete argument for code-owned staleness detection.
+
+### T14.8b — README, Part 1 — **DONE**
+
+- [x] README § "HW5 — Retrieval and evaluation": corpus table, chunking strategy and why
+      fixed-size would have been wrong, every retrieval parameter with its justification, the
+      measured rerank cost, the tool-not-pipeline properties, the 10-query before/after table,
+      and a "Reproducing this" block. Placeholder subsections for Parts 2-4 left in place for
+      their owners.
+- [x] Status / stores / Roadmap / Tools tables updated for HW5.
+
+### T14.9 — Online tests
+
+- [x] `tests/test_retrieval_online.py` — **10 tests, all online** (CLAUDE.md §8): real
+      embeddings, real vectors written into the real Postgres, throwaway schema dropped on
+      teardown. Covers the 1536-dim contract, cache behaviour, the chunk→embed→Postgres round
+      trip, meaning-based dense ranking, BM25 on a rare identifier, RRF promoting cross-arm
+      agreement, the visibility predicate on both arms, the production chunker over the real
+      overlay, atomic table rows, and the `search_corpus` contract including its error branches.
+      **10 passed; no leftover schemas.**
+- [x] Two defects found by these tests and fixed: `text-embedding-3-small` is **not**
+      bit-deterministic (~1.2e-4 drift per component, so eval reproducibility rests on the cache
+      rather than the endpoint), and a `source=` filter matching nothing wrongly returned
+      `index_empty` instead of an empty result.
+
+**Depends on:** Phase 14A. **Blocks:** 14C.
+
+---
+
+## Phase 14C — Retrieval metrics, Part 2 (Alejandro)
+
+Run these **first**, and before anything in 14D. They cost nothing, reproduce exactly, and a
+retrieval bug caught here saves the price of every judged metric downstream.
+
+### T14.10 — The eval set
+
+- [ ] `eval/cases.json` — ≥20 cases: `query`, `golden_answer`, `category`, `anchors`. Realistic
+      beats synthetic: 20 questions someone would actually ask beat 1000 generated ones.
+- [ ] **Content anchors, not chunk ids** — ids move on every re-chunk, and a golden set that goes
+      stale silently is worse than none. Resolved to ids at load via `Anchor` (contract #10).
+- [ ] Spread across ≥5 Session 11 §5 failure categories, **one of which is out-of-corpus** — a
+      question the corpus genuinely cannot answer. Its golden set is empty; that is correct, not
+      missing data.
+- [ ] Reuse T14.8's ≥8 qualitative queries as cases, so Parts 1 and 2 put prose and numbers on
+      the same queries rather than on two unrelated sets.
+
+### T14.11 — Rank-aware retrieval metrics
+
+- [ ] `eval/retrieval_metrics.py` — hit rate@k, precision@k, recall@k, MRR, nDCG@k. Plain Python
+      or sklearn helpers; no evaluation library ships this family, and DeepEval's
+      `ContextualPrecisionMetric`/`ContextualRecallMetric` are *judged* metrics measuring
+      something else — do not substitute them.
+- [ ] Score the **retriever's** order (#59). `search()` already returns it; do not call
+      `pack_for_llm` anywhere in the harness.
+- [ ] Empty-golden cases are **undefined, not zero** — excluded from averages and counted
+      separately in the report. `EvalCase.out_of_corpus` already identifies them.
+- [ ] Run at more than one k (3/5/10). Precision@k and recall@k move in opposite directions, and
+      that tension **is** the finding — measured, not asserted.
+
+### T14.12 — The k-sweep and the rerank table
+
+- [ ] `eval/run_eval.py` — the full matrix, rerank ∈ {on, off} × k ∈ {3,5,10}, with a
+      **per-category breakdown**: an average over a mixed set hides which failure category the
+      retriever is actually bad at, which is the whole reason the cases are tagged.
+- [ ] Run the full set both ways through the `rerank: bool` seam on `search()`. Nothing in class
+      wired an eval harness over a reranked pipeline — this is the table that justifies the
+      reranker, and Part 1 measured its cost at ~4.0s uncached, so the table has to earn it.
+- [ ] `tests/test_retrieval_metrics.py` — the scorers over hand-built `Hit`s. Offline: contract
+      #10 is the whole input surface, so this needs no Postgres and no API key.
+
+### T14.12b — README, Part 2 (Alejandro)
+
+**Every phase writes its own section of the report. Part 4 is assembly, not authorship** — the
+person who ran the numbers is the person who can say what they mean, and a single author writing
+up someone else's table is how a report ends up describing what was expected instead of what
+happened.
+
+- [ ] Fill in README § "Part 2 — Retrieval metrics", replacing the placeholder: the five metrics
+      at k = 3/5/10, reranking on and off, the per-category breakdown, and the count of excluded
+      empty-golden cases reported separately.
+- [ ] State the precision/recall tension explicitly — it moves in opposite directions as k rises
+      and that tension **is** the finding.
+- [ ] Say whether the numbers agree with Part 1's qualitative table. Part 1 found BM25 to be the
+      weaker arm here, RRF to regress 2 of 10, and reranking to net +2 at ~60× the latency —
+      if the metrics disagree with any of that, **the disagreement is the result**, and it is
+      more valuable than a table that merely confirms the prose.
+
+### T14.13 — Planner seed via retrieval
+
+- [ ] `agents/planner.py::_propose_seed_and_steps` resolves its seed through `search_corpus`,
+      closing the open HW4 item where the model is asked to name a component with no node list in
+      front of it and returns an empty seed. The second filed planner bug (`_brace_slice` using
+      `rfind("}")` rather than the matching brace) is **separate** — `overlay/summarize.py` has a
+      correct depth-scan to copy, but land it as its own change, not folded in.
+
+**Depends on:** Phase 14B (a live retriever to score). **Not on Dias.**
+
+---
+
+## Phase 14D — Generation metrics, Part 3 (Dias)
+
+### T14.14 — Judged generation metrics
+
+- [ ] `eval/generation_metrics.py` — ≥3 of faithfulness, answer relevance, context precision,
+      context recall. Hand-rolled on `monitor/judge.py`'s pattern: named values, never a 1-10
+      score (#37, #61). Judge on `STRONG` while answers are generated on `CHEAP`.
+- [ ] `eval/gen_cases.json` — ≥20 cases tagged across ≥5 failure categories, one out-of-corpus.
+      May extend Alejandro's `cases.json` rather than duplicating it; say which.
+- [ ] Cache judge responses. Run both with and without reranking; the rerank-off run may use a
+      **subset** — say which subset and why.
+- [ ] **Acknowledge judge bias** (position, verbosity, self-preference, judge-model mismatch) and
+      say what was done about it, or why it did not bite here. Randomise candidate order; cap
+      answer length in the prompt.
+- [ ] `tests/test_eval_scorers.py` — unit tests for the scorers using a couple of eval cases as
+      fixtures. A scorer nobody tested is a number nobody should trust. ≥1 online test (§8).
+
+### T14.14b — README, Part 3 (Dias)
+
+**Every phase writes its own section of the report** — see T14.12b for why.
+
+- [ ] Fill in README § "Part 3 — Generation metrics", replacing the placeholder: the metric
+      scores **with interpretation**, not bare numbers; reranking on vs. off; and the
+      per-failure-category breakdown, since an average over a mixed set hides which category the
+      system is actually bad at.
+- [ ] Write the judge-bias paragraph in the README itself, not only in the code: which biases
+      (position, verbosity, self-preference, judge-model mismatch) were addressed how, and which
+      were judged not to bite here and why.
+- [ ] Say which subset the reranking-off run used, and why.
+
+**Depends on:** Phase 14C's tables looking sane. Starting before that risks paying for judged
+metrics over a retriever with a known bug.
+
+---
+
+## Phase 14E — Report assembly, Part 4 (Berat)
+
+**Each owner writes their own section; this phase assembles rather than authors.** T14.8b (Part 1,
+done), T14.12b (Part 2, Alejandro) and T14.14b (Part 3, Dias) each land their own README
+subsection as the last task of their phase. That is deliberate: the person who ran the numbers is
+the only one who can say what they mean, and one author writing up two other people's tables
+produces a report describing what was expected rather than what happened.
+
+### T14.15 — Assemble and reconcile
+
+- [x] README § "HW5 — Retrieval and evaluation" created, with Part 1 complete and placeholder
+      subsections for Parts 2-4 (T14.8b).
+- [ ] Check the three sections agree on corpus size, chunk counts, k values and the rerank
+      configuration. Three authors and one index is exactly how a report ends up quoting two
+      different chunk counts.
+- [ ] Write § "Part 4 — What the tables disagree about" once 14C and 14D land. **A retrieval win
+      that did not become an answer win is a finding, not a failure**, and the specific thing to
+      look for is already known: reranking changed 3 of 10 queries for the better and 1 for the
+      worse, at ~60× the latency, so a Part 2 win that does not appear in Part 3 is the expected
+      outcome rather than a bug.
+- [ ] Confirm every claim in the report is measured. Part 1 already had to retract one asserted
+      finding that the measurement reversed (see T14.8); assume the same risk in Parts 2 and 3.
+
+**Depends on:** 14C and 14D for their own subsections.
+
+---
+
 ## Open questions / blockers
 
 - [x] ~~Exact Zen model ids for `CHEAP` / `STRONG` + per-token prices (incl. cached rate)~~ —
@@ -1097,6 +1554,10 @@ and always parses, so only a live call reaches them.
       already knows the answer. Options: put the scanned node ids in the prompt, or return
       `needs_input` (a question the user can answer) instead of `failed` when the seed is empty —
       an empty seed is the model behaving correctly, not a defect.
+      **Assigned a fix in HW5: T14.10.** Neither option above, in the end — pasting the node list
+      into the prompt scales with the repo and still matches on spelling, and `needs_input` makes
+      the user do the lookup. `search_corpus` resolves the seed semantically instead, which is
+      why the retrieval layer is worth its cost to *this* project and not just to the homework.
 - [ ] **`_brace_slice` takes the last `}`, not the matching one.** `rfind("}")` means a single
       stray trailing brace makes the slice unbalanced and an otherwise-good reply unparseable —
       observed roughly one run in four on the cheap model:

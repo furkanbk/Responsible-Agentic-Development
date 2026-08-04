@@ -31,11 +31,20 @@ with each other, and one engineer's private preference must never surface in ano
 
 ---
 
-## 2. Current state (HW3)
+## 2. Current state (HW5)
 
 HW3 puts a surface in front of the HW2 pipeline. Everything below the dashed line is
 unchanged; what is new is that something other than a person at a terminal can start a run,
 and that a run can correctly end in saying nothing.
+
+**HW4** replaced the hand-rolled loop internals with LangGraph and the tool interface with
+LangChain `StructuredTool`s, without changing `run_agent`'s signature or return shape
+(decisions #49-#55) — so the diagram below is unchanged by it.
+
+**HW5** adds one tool to the loop and one input to the planner. `search_corpus` searches
+authored summaries of every module and symbol, so a vague request resolves to the components it
+touches — which is what the planner's seed step needed and never had. Retrieval is a tool the
+model chooses (decision #60), so nothing in the flow below runs unless the model asks for it.
 
 ```
   TELEGRAM ──poll──┐                                  ┌──> reply
@@ -72,18 +81,23 @@ store/runs/runs.jsonl  ──(own schedule, separate agent, read-only)──> MO
 In HW3 the gate's `y/n` arrives as another channel message rather than on stdin (decision
 #41), and the monitor's "own schedule" becomes an actual clock (T11.1, Dias).
 
-**Four stores, four jobs:**
+**Five stores, five jobs:**
 
 ```
 store/knowledge_graph.json   derived     nodes · edges          any scan regenerates it
 store/radf.db                authored    decisions · runs ·     no scan may touch it
-                                         run_scratch · silences
+                                         run_scratch · silences ·
+                                         node_summaries (HW5)
 store/memory.json            authored    free-form facts+rules  cue-retrieved
 rules/*.md                   authored    operating rules        edited by hand, pushed every run
+Postgres + pgvector (HW5)    derived     chunks · embeddings    droppable; rebuilt by reindex
 ```
 
 The first is a **deliberate stand-in** for GitNexus and is not being built out (§6.1,
-decision #21). The other three are ours and are the durable half.
+decision #21). The last is derived too, and is the only store that is not a file — it exists
+because the retrieval index needs vector similarity and metadata filtering in one query
+(decision #56). The three authored stores in the middle are ours and are the durable half; the
+overlay is explicitly **not** migrating into Postgres now that one is running (decision #62).
 
 ---
 
@@ -273,6 +287,76 @@ decision #21). The other three are ours and are the durable half.
   combined cap (own branch — never a partial diff dressed as complete).
 - **Status:** **done** (Phase 13a)
 
+### `retrieval/types.py` — the chunk contract (HW5)
+<!-- OWNER: Berat -->
+- **Owns:** `Chunk`, `Hit`, `Anchor`, `EvalCase` (frozen dataclasses), `ChunkKind`, `KINDS`.
+- **What:** the shape the retrieval layer (Phase B) and the eval harness (Phase C) are both
+  built against, so neither owns it and they can proceed in parallel. **Frozen contract.**
+- **Three fields that are cheap now and expensive later:** `symbol_uid` — every chunk joins the
+  existing uid space (#22), so a hit can be handed straight to `retrieve_decisions` or the impact
+  walk without a second lookup. `heading_path` — prefixed onto chunk text at index time; without
+  it a chunk reading "JSON, because it is diffable" is unretrievable by any query not already
+  using those words. `Hit.rank` — the position the *retriever* returned, read by MRR/nDCG before
+  any repacking (#59).
+- **`EvalCase.out_of_corpus`** is `not anchors`: a case with no golden anchors is the deliberately
+  unanswerable one, correct as written. Its metrics are undefined rather than zero.
+- **Status:** **done** (Phase A)
+
+### `retrieval/` — hybrid search layer (HW5)
+<!-- OWNER: Berat -->
+- **Owns:** `chunker`, `embed`, `cache`, `store`, `bm25`, `fuse`, `rerank`, `search`, `index`.
+- **Pipeline:** chunk (`node_summaries` + decisions + doc sections) → embed
+  (`text-embedding-3-small` via OpenRouter, disk-cached by text sha) → retrieve 30 per arm
+  (pgvector exact scan ‖ hand-written Okapi BM25) → RRF fuse (k=60) → optional LLM rerank to
+  top-k, cached on `(query, candidate ids)`.
+- **Seam:** `search(query, *, k, rerank, source) -> list[Hit]`, returning **retriever order**
+  (#59). Exact vector scan rather than HNSW/IVFFlat: ~600 chunks does not warrant approximation,
+  and saying so is a stronger justification than a copy-pasted `lists=100`.
+- **Corpus, as built:** 963 chunks — 351 component cards, 607 doc sections, 5 decisions (3
+  team-visible). ~117k tokens, **$0.002** and 41s for a full re-index; ~1s when cached.
+- **Status:** **done** (Phase 14B)
+
+### `tools/retrieval_tools.py` — retrieval as a tool (HW5)
+<!-- OWNER: Berat -->
+- **Owns:** `search_corpus(query, k=5, rerank=True, source: Literal["all","components","decisions","docs"]) -> dict`
+- **What:** closes §6's long-standing "retrieval over the graph — exact lookup only" gap. A
+  request phrased the way people phrase them ("make the approval prompt clearer") matches
+  nothing through `query_component_graph`, which needs a dotted module id. Listed ahead of the
+  two exact lookups in `TOOL_FUNCTIONS`: ranked guess first to *find* the name, exact join second
+  to answer about it.
+- **A tool, not a pipeline stage** (#60) — the model decides whether to search, and can refine
+  and re-query, which needed no new machinery because `detect_stall` (#10) blocks only identical
+  repeats. Read-only → ungated. No identity/scope parameter (#25).
+- **Contract:** `{"query","k","reranked","source","count","results":[{chunk_id, kind, symbol_uid,
+  symbol, heading_path, source_path, rank, score, text}]}`; errors
+  `index_unavailable | index_empty | invalid_args` get their own branch (Part B, B2). A
+  `source=` filter matching nothing is an empty result, **not** `index_empty` (decision #64).
+- **Status:** **done** (Phase 14B)
+
+### `overlay/summarize.py` — the summariser (HW5)
+<!-- OWNER: Berat -->
+- **Owns:** `run(...)`, `summarize_node(...)`, `python -m overlay.summarize`.
+- **What:** fills `node_summaries` — one module card plus one card per symbol **the scanner
+  declared**. Model-proposed names absent from that list are dropped (model proposes, code
+  decides, #38). Idempotent on `content_sha`, so an unchanged file costs no call.
+- **Run:** 57 nodes -> 342 cards, 0 failures. Uses a brace-depth JSON slice, not `rfind("}")` —
+  the defect filed against `agents/planner.py::_brace_slice` would have cost ~1 node in 4 here.
+- **Status:** **done** (Phase 14B)
+
+### `eval/` — retrieval + generation evaluation harness (HW5)
+<!-- OWNER: Alejandro (Phase 14C, Part 2); Dias (Phase 14D, Part 3) -->
+- **Owns:** `cases.json`, `retrieval_metrics.py`, `generation_metrics.py`, `run_eval.py`.
+- **Separate from agent code on purpose** — the harness imports the retrieval layer, never the
+  reverse.
+- **Rank-aware metrics** (free, reproducible, run first): hit rate@k, precision@k, recall@k, MRR,
+  nDCG@k. No eval library ships this family. Empty-golden cases are **undefined, not zero** —
+  excluded from averages and counted separately.
+- **Judged metrics** (an LLM call each): hand-rolled on `monitor/judge.py`'s pattern — named
+  values, never a 1-10 score (#37, #61) — and disk-cached.
+- **Goldens are content anchors, not chunk ids**, resolved at load: ids move on every re-chunk,
+  and a golden set that silently goes stale is worse than none.
+- **Status:** **stub** (Phases 14C / 14D)
+
 ### `tools/__init__.py` — registry + schema assembly
 <!-- OWNER: Berat; HW4 registry-assembly additions by Alejandro (Phase 13a, decision #54) -->
 - **Owns:** `build_registry() -> (schemas, registry)`, module-level `SCHEMAS` / `REGISTRY`.
@@ -324,7 +408,35 @@ run_scratch(seq PK, run_id, agent, step, key, value, ts)          -- append-only
 scratch_reads(seq PK, run_id, agent, step, key, saw_seq, ts)      -- incl. misses
 silences(silence_id PK, run_id, trigger, reason_code, evidence,   -- HW3, T9.4
          visibility, ts)
+node_summaries(symbol_uid, symbol, PK(symbol_uid, symbol),        -- HW5, T14.1
+               summary, responsibility, signature, content_sha,
+               author_id, source_run_id, updated_at)              -- UPSERTed
 ```
+`node_summaries` is authored prose about a *derived* node, which is why it is here and not in
+`knowledge_graph.json`: decision #16 lets any scan replace that file wholesale, so a summary
+stored in a node is a summary the next scan deletes (decision #57). `symbol = ''` is the module
+card; a non-empty `symbol` is a per-symbol card. Unlike every other table here it is UPSERTed
+rather than append-only — a summary is a current description, not a historical claim, and
+retaining superseded wordings would fill the retrieval corpus with near-duplicates of itself.
+`content_sha` is what lets **code** decide a summary is stale (the file changed) without asking
+a model; a `symbol_uid` that no longer resolves is **orphaned, surfaced, never deleted**, same
+rule as decisions. No `visibility` column, deliberately: a decision can be private (#24), but a
+description of what `agentlib/guards.py` does is a fact about shared code, and scoping it would
+imply a boundary the source tree does not have.
+
+### `RADF_PG_DSN` — the retrieval index (derived)
+<!-- OWNER: Berat defines; Alejandro builds -->
+```sql
+chunks(chunk_id PK, kind, text, embedding vector(1536),
+       symbol_uid, symbol, heading_path, source_path, content_sha, visibility)
+```
+Postgres + pgvector, from `docker-compose.yml` (port 5433, so it can never collide with a local
+Postgres). **Entirely derived** — droppable and rebuildable at any time, and the sqlite overlay
+is explicitly not migrating into it (decision #62). `kind` ∈ {`component`,`decision`,`doc`} and
+doubles as `search_corpus`'s `source` filter. Only `decision` chunks ever carry a non-`team`
+`visibility`, and it is applied as a `WHERE` clause on the same query as the vector scan (#24) —
+never as a post-filter and never as an instruction to the model. Chunk and hit shapes are frozen
+in `retrieval/types.py`.
 `symbol_uid` is `resolve_uid(component)` — `"Kind:path"`, e.g. `"Module:agentlib.core"`.
 `NULL` means repo-wide. `visibility` is `"team"` or `"user:<id>"` — on `silences` too, and
 there it names who may read the *reason* (decision #44), which for the leak guard is the
@@ -443,14 +555,38 @@ reason #41/#46/#47 were pre-allocated in HW3.
 | 54 | 2026-08-03 | tools/__init__.py, tools/text_tools.py | The conversion sweep is a **registry-assembly** change: `build_langchain_registry()` runs the whole `TOOL_FUNCTIONS` list through `to_langchain_tool` (#50) and exposes `LANGCHAIN_TOOLS`, and the second new tool (`diff_texts`) is registered by adding it to that list — **no tool body or signature is touched**. The one online test drives the real model to *select* the new tool through the compiled graph | Hand-wrapping each of the eight graph tools as a `@tool`/`StructuredTool` in its own module; making the online test assert only that the tool *runs* once named | All ten tools already convert cleanly through the single point (verified), so a per-file rewrite would only re-introduce the eight-places-to-drift risk decision #50 exists to remove — the sweep belongs at the one assembly point, not scattered. Invariant #25 then holds by construction across the whole registry: conversion reads only parameters the author wrote, and none of them is identity or scope (a test asserts no `author_id`/`impacted`/… field appears). The online test asserts *selection*, not just execution, because the framework-conversion bug §8 targets is a schema that never reaches the model — a test that hand-picks the tool would pass even then. `diff_texts` pairs with `apply_change` (show the change vs. land it) and is ungated because a diff is read-only (CLAUDE.md §5), the same reason `evaluate_expression` is. |
 | 55 | 2026-08-02 | tests/_online.py, tests/test_loop_contract.py | The §8 online gate is **one shared fixture**, and it (a) treats a placeholder key as *no key*, (b) reads `.env` **without exporting it**, and (c) exports the real key only for the duration of the test that asked. Contract #9 gets its own suite, separate from `test_graph_agent.py` | A per-suite `skipif(not os.environ.get("OPENCODE_API_KEY"))`; a module-level `load_dotenv()`; folding the contract assertions into the graph-internals suite | Three failure modes, each found by hitting it. **(a)** `.env.example` ships `OPENCODE_API_KEY=sk-...` and a half-configured checkout copies it verbatim; that string is truthy, so a naive check *runs* the online test and reports the provider's 401 as a red test. Absent key is a **skip** — the suite has nothing to say about correctness when it cannot reach a model, and only a real failure should be red. **(b)** A module-level `load_dotenv()` in a shared helper exports the placeholder for the whole session and silently flipped `test_graph_agent.py`'s own skip decision, turning its online test red from an unrelated file — so the decision reads `.env` via `dotenv_values` and mutates nothing. **(c)** `agentlib.core` reads the key from `os.environ` at call time, so it must be exported *somewhere*; a fixture scopes that to one test and restores the previous value, which is the smallest window that still works. The contract suite is separate because it asserts a different thing: `test_graph_agent.py` tests the graph's internals (state schema, tool wrapping, routing), `test_loop_contract.py` tests only what crosses the boundary four other files depend on — signature keywords, return keys, branch tags, and `run_id`'s presence rule. If a later refactor drifts the shape, four callers break at once and the failure should name the contract, not surface as four unrelated bugs. |
 
+### HW5 decisions
+
+Phase A (contracts) is #56-#62; Phase B (the retrieval layer) is #63-#65. #66+ are reserved for
+Phases C and D so parallel branches do not collide in this table.
+
+| # | Date | Component | Decision | Rejected alternative | Why |
+|---|------|-----------|----------|----------------------|-----|
+| 56 | 2026-08-04 | repo-wide / CLAUDE.md §4, §7.1 | The §4 "vector databases, embedding services" ban is lifted for **`psycopg` + `pgvector` and OpenRouter's embeddings endpoint only**; §7.1's "retrieval over the graph" ban is lifted for what HW5 names | adding a purpose-built vector store (Chroma, Qdrant, Weaviate); lifting the dependency rule generally; leaving the ban in place and hand-rolling a pure-Python cosine index | Same narrow-amendment pattern as §7.1 (HW2) and §4 (HW4): name the pieces, lift nothing else. Postgres was chosen over a dedicated vector store because the corpus needs *filtering* as much as similarity — chunks carry `symbol_uid`, `kind` and `visibility`, and the visibility predicate (#24) has to be a `WHERE` clause on the same query as the vector scan, not a post-filter. A pure-Python index would have honoured the old rule but at ~600 chunks the honest reason to avoid a database was gone, and the rule was written for HW1's "understand the loop" constraint, not as a permanent architectural claim. What is *still* hand-written is the part being graded: BM25, RRF, the reranker, and all five rank metrics. Ragas, DeepEval, LlamaIndex, CrewAI, Haystack and graph databases stay out. |
+| 57 | 2026-08-04 | overlay.db `node_summaries` | Node summaries — authored prose saying what each module/symbol is *for* — live in the **overlay**, keyed on `resolve_uid`, never in `knowledge_graph.json` | adding a `summary` field to the derived nodes, where the scanner already has the file open and could fill it in cheaply | This is #5 and #16 applied to a new kind of row, and the cost of getting it wrong is invisible until it is total: decision #16 lets any scan replace the derived layer *wholesale*, so a summary written into a node survives exactly until the next `scan_repository_structure` and then vanishes with no error. Summaries are the expensive artefact here — one model call each, and the thing retrieval actually searches — so losing them silently on a re-index would be the worst failure the store could have. Keyed on `symbol_uid` (#22) means a component that moves orphans its summary rather than dropping it, same as a decision. `(symbol_uid, symbol)` is UPSERTed rather than append-only, unlike `decisions`: a summary is a current description, not a historical claim, and keeping superseded wordings would fill the retrieval corpus with near-duplicates of itself — precisely the failure mode reranking handles worst. |
+| 58 | 2026-08-04 | retrieval.bm25 | BM25 is **hand-written in Python** (Okapi, `k1=1.2`, `b=0.75`), not Postgres full-text ranking and not `rank_bm25` | `tsvector` + `ts_rank_cd`, which would put both retrieval arms in one SQL query; the `rank_bm25` package; ParadeDB/`pg_search` for real in-database BM25 | **Postgres FTS ranking is not BM25, and the gap is not cosmetic.** `ts_rank`/`ts_rank_cd` consult no corpus-wide document frequency at all — there is no IDF — and IDF is the entire mechanism by which the lexical arm beats dense retrieval on the queries it was added for: rare identifiers like `impact_scope`, `prune_graph_node`, `symbol_uid`. Without it, `agent` (in nearly every chunk of this corpus) and `pgvector` (in one) weigh the same. It also lacks `k1` saturation, which bites concretely here: `docs/TODO.md`'s ownership tables repeat the same names dozens of times, and a linear-in-tf ranker floats them to the top of half the queries. ParadeDB would give genuine BM25 but makes the parameters the extension's to justify rather than ours, on a corpus of ~600 chunks where all three options have identical latency. `overlay/memory.py::_tokens` already supplies the tokenizer. |
+| 59 | 2026-08-04 | retrieval.search | `search()` returns the **retriever's** ranked order. Any lost-in-the-middle repacking is a separate function applied downstream, never inside the search path | packing for the context window inside `search()`, which is where it is most convenient | MRR and nDCG read rank position; hit rate, precision and recall do not. Feed a repacked list into all five and **two silently degrade while the other three look fine** — a discrepancy that reads as a retrieval regression and is actually an instrumentation bug. Keeping the reorder outside the seam means the metrics cannot be fed the wrong order by accident, rather than relying on the harness to remember. |
+| 60 | 2026-08-04 | tools/retrieval_tools.py | `search_corpus` is a **tool the model chooses to call**, with a `rerank: bool` parameter, never a pipeline stage that runs before every request | retrieving on every turn and prepending the chunks; a fixed retrieve→generate chain | A fixed pre-retrieval step spends a search on every "hi" and cannot re-query when the first result set is thin. As a tool the model can skip it, or refine and call again — which already works, because `guards.detect_stall` (#10) stops an *identical* repeated call but lets a genuinely different query through, so re-querying needed no new machinery. `rerank` is deliberately both a real agent-facing control and the seam the eval harness toggles: the reranking-on/off comparison then measures the same code path the agent actually uses, rather than a test-only branch. Scope stays ambient (#25) — no `user_id` parameter — and decision chunks are filtered by the `visible_to` predicate inside the SQL query (#24). |
+| 61 | 2026-08-04 | eval/ | Judged generation metrics are **hand-rolled** on `monitor/judge.py`'s pattern; the eval harness lives in `eval/`, separate from agent code | Ragas; DeepEval (what Session 11 runs, and the assignment's stated default) | Both would be substantial new dependencies under a §4 amendment that just named its pieces, and both score numerically, which contradicts #37 (grade on named values, never a 1-10 score) — adopting one would mean either amending #37 or carving an exception into the one place we already judge model output. We also already own a judge with a house style for exactly this. Owning the prompts matters for a graded requirement: judge bias (position, verbosity, self-preference, judge-model mismatch) has to be *addressed and described*, which is hard to do honestly about prompts you cannot see. |
+| 62 | 2026-08-04 | store/, retrieval.store | The sqlite overlay **does not migrate** to Postgres. Postgres holds only the derived retrieval index and may be dropped and rebuilt at any time | moving `decisions`/`runs`/`silences` into the new database now that one is running | Recorded because it is the temptation this homework creates, not because anything proposed it: once a real database is in the compose file, consolidating looks free. It is not. #21 and #23 chose the split on "is the query the product" and on the derived/authored boundary, and neither reason changed — what changed is only that a *derived* index now needs a database too. Keeping the authored half in a diffable file under `store/` also preserves the property that the durable knowledge survives `docker compose down -v`. |
+| 63 | 2026-08-04 | retrieval.cache | The embedding/rerank cache is **one sqlite file** of float32 vectors under `store/cache/`, gitignored — and it is kept for **reproducibility first, cost second** | one JSON file per vector (the first implementation: 962 files, 31 MB); no cache at all, re-embedding per run | The cost argument alone would not justify a cache: a full re-index is ~$0.002 and 41s. The reproducibility argument does, and it was **measured, not assumed** — `text-embedding-3-small` is *not* bit-deterministic. The same string re-embeds with up to ~1.2e-4 drift per component (asserted in `tests/test_retrieval_online.py`). Cosine similarity stays ~1.0 so rankings are stable in general, but two chunks closer than that margin can swap, and MRR/nDCG read position. So Part 2's tables are identical across runs *because the vectors come from the cache*, not because the endpoint is stable. One sqlite file rather than a directory: JSON stores a float as ~11 characters where `array('f')` uses 4 bytes (31 MB -> 7.7 MB), a thousand small files are slow to stat and noisy in every tree walk, and representing one derived artefact as 962 files invited the question of whether some should be committed. float32 loses ~1e-7, three orders of magnitude below the endpoint's own drift. |
+| 64 | 2026-08-04 | retrieval.search | A `source=` filter that matches nothing returns an **empty result**; only an index with no visible chunks at all raises `IndexEmpty` | one "nothing came back" branch covering both | Found by the online tests. Collapsing them sends people to the wrong fix — `search_corpus(source="components")` before the summariser has run is a legitimately empty answer, and reporting it as `index_empty` reads as an outage and prompts a reindex that changes nothing. Same distinction decision #18 draws for the graph file: absent is a valid answer, corrupt is an error. |
+| 65 | 2026-08-04 | retrieval.rerank | The reranker sorts candidates into three **named bands** (`answers`/`related`/`unrelated`) and defers to fused order within a band; an unjudged candidate keeps its fused position rather than being dropped | asking for a 0-10 relevance score per candidate; dropping candidates the model did not return a verdict for | #37's rule applied to a new judgment: a model asked for a number clusters everything at 7 and produces suspiciously smooth distributions, while three named buckets force a commitment a human can audit in the trace. Deferring to fused order inside a band means the reranker only ever *reorders across* bands, so it cannot destroy the fusion signal it was handed. Dropping unjudged candidates was rejected because a reranker that silently deletes results is strictly worse than one that declines to reorder them — and parse failures are the common case with a cheap model. |
+
 ---
 
 ## 6. Known gaps / deferred to later homeworks
 
 - Orchestrator + Architecture/Discussion agent split (multi-agent, Session 5)
 - ELI5 agent with Mermaid output
-- Retrieval over the graph (Session 10) — currently exact lookup only
+- ~~Retrieval over the graph (Session 10) — currently exact lookup only~~ — **closed by HW5**
+  (decisions #56-#62): hybrid dense+BM25 retrieval over authored node summaries, behind
+  `search_corpus`. The exact lookups (`query_component_graph`, `retrieve_decisions`) remain and
+  are still the right call once a name is known — retrieval finds the name, the joins answer
+  about it.
 - Evaluation harness: coupling drift, decision consistency, rework rate, context cost (Session 11)
+  — HW5 adds retrieval and generation evaluation under `eval/`; the *agent-level* metrics in this
+  line are still open.
 
 ### 6.1 Deferred: replace the structural half with GitNexus
 

@@ -22,9 +22,9 @@ each other, and one engineer's private preference must never surface in another'
 
 | | |
 |---|---|
-| Homework | HW2 — memory, multi-agent, monitor |
-| Stage | overlay, scoped memory, context assembly, envelope, executor + orchestrator: **done**. Planner, gated write, monitor: in progress |
-| Tests | 127 passing, fully offline |
+| Homework | HW5 — retrieval layer + evaluation harness *(the classroom calls this one "HW2"; see [`docs/TODO.md`](docs/TODO.md) § HW5)* |
+| Stage | HW1-HW4 closed. HW5 Part 1 (retrieval layer): **done**. Part 2 (retrieval metrics), Part 3 (generation metrics), Part 4 (report): in progress |
+| Tests | 328 passing + 10 online retrieval tests |
 | Course | Coding Assistants as Agentic Systems |
 
 ---
@@ -171,6 +171,8 @@ Not one store for everything. Each holds what fits it.
 | `store/radf.db` | **authored** | decisions · runs · shared scratch | no scan may touch it |
 | `store/memory.json` | **authored** | free-form facts and rules | cue-retrieved, per-user scoped |
 | `rules/*.md` | **authored** | operating rules | edited by hand, pushed every run |
+| `store/radf.db` → `node_summaries` | **authored** | what each module and symbol is *for* | HW5; survives every re-index, staleness by `content_sha` |
+| Postgres + pgvector | derived | chunks · embeddings | HW5; droppable, rebuilt by `python -m retrieval.index` |
 
 Decisions are relational and memory is not, and the split is *not* structured-vs-unstructured —
 it is **whether the query is the product**. "Which accepted decisions constrain the modules this
@@ -448,6 +450,7 @@ inspect_store.py       read the stores: decisions, memory, runs, per-run trace
 | Tool | Effect | Constrained param | Reversible | Gated |
 |---|---|---|---|---|
 | `scan_repository_structure` | writes nodes/edges to the graph | `kind` enum, `max_depth` int | yes (re-runnable) | no |
+| `search_corpus` | ranked semantic + lexical search over the corpus | `source` enum, `k` bounded 1..20 | yes | no |
 | `query_component_graph` | read-only structural lookup | `relation` enum | yes | no |
 | `retrieve_decisions` | read-only overlay lookup, user-scoped | `scope` enum | yes | no |
 | `retrieve_memory` | read-only memory lookup, user-scoped | `kind` enum | yes | no |
@@ -464,6 +467,11 @@ Every tool above is offered to the model through the same registry
 tool by `agentlib.langchain_tools.to_langchain_tool` before being bound to the model
 (`ChatOpenAI.bind_tools`). The model decides when to call one from the user's request; nothing
 in `agentlib/graph.py` hardcodes "this kind of question uses this tool."
+
+`search_corpus` is listed ahead of the two exact lookups on purpose: a ranked guess *finds* the
+name, and the exact joins then answer about it. Its docstring says when **not** to call it —
+"what imports `agentlib.core`" is `query_component_graph`, not a search. Retrieval is never a
+step that runs before the model speaks (decision #60).
 
 ---
 
@@ -511,10 +519,199 @@ function. See [`CLAUDE.md`](.claude/CLAUDE.md) §6 and
 
 ---
 
+## HW5 — Retrieval and evaluation
+
+> The classroom calls this assignment **HW2**; this repo already had four homeworks on the same
+> codebase, so it is **HW5** here. Course Part 1 → Phases 14A+14B, Part 2 → 14C, Part 3 → 14D,
+> Part 4 → this section. Owners in [`docs/TODO.md`](docs/TODO.md) § HW5.
+
+### Why retrieval, for this project specifically
+
+Retrieval was exact-lookup only: `query_component_graph` needs a dotted module id and
+`retrieve_decisions` needs an exact `symbol_uid`. So a request phrased the way people actually
+phrase them — *"make the approval prompt clearer"* — matched nothing at all.
+
+That was not hypothetical. `agents/planner.py` asks the model to name the component a change
+touches **without showing it any list of components**; on a request that does not already name
+one, the live model correctly returns an empty seed and the planner reports `failed`. It worked
+only when the caller already knew the answer. `search_corpus` is the fix.
+
+### Part 1 — Retrieval design
+
+#### The corpus: the codebase describing itself
+
+Not a generic document set. The corpus is **1200 chunks** of three kinds, all keyed into the
+existing `symbol_uid` space so a retrieval hit can be handed straight to `retrieve_decisions` or
+the impact walk with no second lookup:
+
+| Kind | Count | What one chunk is | Source |
+|---|---:|---|---|
+| `component` | 584 | one module or symbol card: what it is, what it owns, when you would touch it | `node_summaries` (authored) |
+| `doc` | 611 | one heading-bounded section of the repo's own markdown | `ARCHITECTURE.md`, `TODO.md`, `README.md`, `CLAUDE.md`, `rules/`, briefs, slides |
+| `decision` | 5 (3 team-visible) | one authored decision record, atomic | `decisions` table |
+
+The component cards are **generated once and stored as authored data** by
+`python -m overlay.summarize` — 88 nodes, one cheap model call each, idempotent on `content_sha`.
+They live in the sqlite overlay, never in `knowledge_graph.json`, because any scan replaces that
+file wholesale and would silently delete them (decision #57).
+
+#### Chunking strategy, and why fixed-size would have been wrong
+
+**Size 1200 chars (~300 tokens), overlap 15% applied only on overflow, boundaries at markdown
+headings — with two hard rules.**
+
+1. **Table rows are atomic.** `ARCHITECTURE.md`'s decision log is a table whose columns are
+   `decision | rejected alternative | why`. A fixed-size split severs a decision from its
+   rationale and produces two chunks that each retrieve for the query and answer none of it. Each
+   row becomes one chunk, carrying its header row so the columns still mean something.
+2. **Every chunk is prefixed with its full heading path** — `ARCHITECTURE.md > §5 Decision log`.
+   Without it, a chunk reading *"JSON, because it is diffable and any scan may replace it"* is
+   unretrievable by any query that does not already use those words. ~60 characters per chunk,
+   and it buys more than overlap does.
+
+Overlap is conditional for a reason: an unconditional overlap on already-atomic units
+manufactures the near-duplicate noise the reranker handles worst, purely to satisfy a default.
+Fenced code blocks are never split.
+
+#### Retrieval parameters
+
+| Stage | Setting | Why this value |
+|---|---|---|
+| Dense | `text-embedding-3-small`, 1536-dim, pgvector **exact scan** | 1200 chunks does not warrant HNSW/IVFFlat; approximation would add a tuning parameter nobody can justify and a recall cliff at a size we do not have |
+| Lexical | hand-written Okapi BM25, `k1=1.2`, `b=0.75` | Postgres `ts_rank_cd` is **not** BM25 — no IDF, no tf saturation. `b≠0` because chunk lengths here vary by an order of magnitude (a one-line symbol card vs a full decision record) |
+| Fusion | RRF, **k=60** | Fuses by *position*, so the dense arm's cosine distance and BM25's unbounded IDF sums never have to be normalised onto one scale. k controls how sharply rank 1 outweighs rank 10: k=10 is ~2.0×, k=60 is ~1.15×. Low k makes fusion "whichever arm is most confident wins", which defeats running two |
+| Depth | retrieve **30 per arm** → fuse → rerank to **k** (default 5) | The reranker cannot recover a chunk neither arm retrieved. In the queries below the correct chunk sat between fused positions 2 and 20; a pool of 10 would leave nothing to rerank, beyond ~40 the marginal chunk is noise |
+| Rerank | one `CHEAP` call, three **named** bands (`answers`/`related`/`unrelated`) | Named values, never a 0-10 score (decision #37): a model asked for a number clusters everything at 7; three buckets force an auditable commitment |
+
+**What the reranker costs — measured, not estimated: ~4.0s uncached (range 3.4–4.2s) against
+~60ms without it.** That is a ~60× multiplier and it is the honest headline; this is not a cheap
+stage. Cached it drops to ~60–140ms, which is why the eval harness can re-run the full k-sweep
+for free but a live agent turn cannot. Whether it is worth 4s is a real trade — which is exactly
+why `rerank` is a parameter the caller sets, and why Part 2 measures it both ways.
+
+**Cost:** a full re-index of 1200 chunks is ~140k tokens ≈ **$0.003** and ~40s; ~1s when cached.
+
+#### Retrieval is a tool, not a pipeline stage
+
+`search_corpus(query, k=5, rerank=True, source="all"|"components"|"decisions"|"docs")` is a plain
+callable in `TOOL_FUNCTIONS`, converted through the same `to_langchain_tool` seam as every other
+tool. Nothing runs a search before the model speaks — the model decides whether the question
+needs the corpus at all.
+
+**Re-querying already worked and needed no new machinery**: `guards.detect_stall` stops an
+*identical* repeated call but lets a genuinely different query through, so a refined second
+search is allowed and a loop is not.
+
+Two properties that are easy to lose by accident:
+
+- **`search()` returns the retriever's order.** Any lost-in-the-middle repacking is a separate
+  `pack_for_llm` function applied downstream. Feed a repacked list to the five metrics and
+  exactly two (MRR, nDCG) silently degrade while the other three look fine — a discrepancy that
+  reads like a retrieval regression and is an instrumentation bug (decision #59).
+- **Visibility is a `WHERE` clause on both arms.** Private decisions are filtered in the same
+  query as the vector scan, from the ambient `current_user()` — there is no `user_id` parameter
+  for a caller to get wrong. Filtering only the dense arm would leak the row back through the
+  fused ranking.
+
+### Part 1 — Before/after over 10 queries
+
+Top-3 for each stage over the live index. **Bold = the chunk that actually answers the query.**
+
+| # | Failure mode | Query | Dense only | BM25 only | RRF | RRF + rerank |
+|---|---|---|---|---|---|---|
+| 1 | exact-term | `impact_scope` | **`session.impact_scope`** | ARCHITECTURE §7 prose | **`session.impact_scope`** | **`session.impact_scope`** |
+| 2 | exact-term | `prune_graph_node cascade` | **`tools.graph_write.prune_graph_node`** | test class | test class *(regressed)* | test class *(not fixed)* |
+| 3 | acronym | `RRF` | **`retrieval.fuse.rrf`** | **`retrieval.fuse.rrf`** | **`retrieval.fuse.rrf`** | **`retrieval.fuse.rrf`** |
+| 4 | acronym | "what does uid mean here" | **`overlay.uid`** | guidance slides | **`overlay.uid`** | **`overlay.uid`** |
+| 5 | lexical-vs-semantic | "what stops the agent from looping forever" | **`agentlib.loop`** | TODO §14B | `graph._route_after_tools` *(regressed)* | **`agentlib.loop`** *(fixed)* |
+| 6 | lexical-vs-semantic | "how do we make sure a risky action needs a human first" | README overview | **`agentlib.approval`** | **`agentlib.approval`** | `orchestrator.approve_via_input` *(regressed)* |
+| 7 | near-duplicate | "what tools does the agent have" | README ×2 | executor brief | executor brief ×2 | executor brief ×3 *(worse)* |
+| 8 | why-question | "why is the graph a JSON file and not a database" | **ARCH §5 decision log** | **ARCH §5 decision log** | **ARCH §5 decision log** | **ARCH §5 decision log** |
+| 9 | multi-hop | "where is visibility enforced" | ARCH §7 ×2 | README | ARCH §5 + `retrieval.store._visibility_clause` | **`_visibility_clause` + `overlay.db.visible_to`** *(fixed)* |
+| 10 | out-of-corpus | "what is our kubernetes ingress configuration" | confident junk | confident junk | confident junk | confident junk *(correct behaviour)* |
+
+#### What this actually shows — including where it disagrees with the textbook
+
+**1. BM25 is the *weaker* arm on this corpus, not the stronger one.** The expected story is that
+BM25 rescues exact-term and acronym queries that embeddings fumble. Here the opposite happened:
+dense won queries 1, 2, 4 and 5 outright and BM25 won only 6. The reason is specific and worth
+stating — **component cards carry the identifier as their title**, so embedding a bare
+identifier matches the card almost directly; meanwhile these identifiers are *not rare* in this
+corpus (`impact_scope` appears throughout `TODO.md` and `ARCHITECTURE.md` prose), so IDF never
+gives BM25 the edge it gets on a normal document set. The lexical arm still earns its place —
+query 6 is a case only it got — but the honest summary is that it contributes less here than the
+literature would predict.
+
+**2. RRF sometimes makes things worse.** On queries 2 and 5 the dense arm had the right chunk at
+rank 1 and fusion *demoted* it, because a wrong-but-confident lexical ranking pulled a different
+chunk up. This is the cost of fusing by position: it rewards agreement, and when one arm is
+simply right, agreement is the wrong objective. Net across the ten: RRF fixed 1 query and broke 2.
+
+**3. Reranking is the most reliable single improvement, and it is not free or universal.** It
+fixed 5 and 9 (the latter promoting the two real implementations of visibility filtering ahead of
+prose *about* it), left 2 unfixed, and actively regressed 6. Three of ten changed for the better,
+one for the worse — at ~4s per query.
+
+**4. Near-duplicate noise survived every stage** (query 7). At `rerank` the top 3 are all chunks
+of the same `executor_brief.md`. Nothing in the pipeline deduplicates by source document, and the
+reranker's per-candidate judgment cannot see that three candidates are near-copies. This is a
+named limitation, not an oversight — a diversity penalty (MMR) is the standard fix and is not
+implemented.
+
+**5. Out-of-corpus queries return confident junk at every stage** (query 10). Retrieval always
+returns *something*. No stage abstains. This is why the eval set includes cases with an
+**empty golden set**, and why those cases are scored as undefined rather than zero.
+
+**6. One "retrieval failure" turned out to be corpus staleness.** On the first run, query 3
+(`RRF`) failed at every stage — it returned TODO/README prose and never the `retrieval.fuse`
+card. The cause was not ranking: the graph had been scanned before `retrieval/` existed, so those
+modules had **no summary cards at all**. Re-scanning and re-summarising (88 nodes; 57 unchanged
+correctly skipped by `content_sha`) fixed it outright, and the query now returns the right card
+at rank 1 from every arm. This is the concrete argument for `content_sha` staleness detection
+being code-owned rather than a rule asking an agent to remember.
+
+### Part 2 — Retrieval metrics
+
+*Owner: Alejandro (Phase 14C). Table to be filled in: hit rate@k, precision@k, recall@k, MRR,
+nDCG@k, at k = 3/5/10, with reranking on and off, plus the per-category breakdown and the count
+of excluded empty-golden cases.*
+
+### Part 3 — Generation metrics
+
+*Owner: Dias (Phase 14D). Table to be filled in: at least three of faithfulness, answer
+relevance, context precision, context recall — with and without reranking, per failure category,
+and a statement of what was done about judge bias.*
+
+### Part 4 — What the tables disagree about
+
+*To be written once Parts 2 and 3 land. The specific thing to look for, given the above: the
+reranker changed 3 of 10 queries for the better and 1 for the worse, so a retrieval win that does
+not become an answer win is the expected finding, not a failure.*
+
+### Reproducing this
+
+```bash
+docker compose up -d                  # Postgres + pgvector on 127.0.0.1:5433
+python -m overlay.summarize           # node cards -> store/radf.db (idempotent)
+python -m retrieval.index             # chunk, embed, load  (~40s, ~$0.003)
+python -m retrieval.index --dry-run   # chunk + report only, embeds nothing
+pytest tests/test_retrieval_online.py # 10 online tests, throwaway schema, dropped after
+```
+
+The embedding and rerank cache is one gitignored sqlite file under `store/cache/`. It is kept
+for **reproducibility first**: `text-embedding-3-small` is not bit-deterministic (~1.2e-4 drift
+per component, asserted in the online tests), and two chunks closer than that margin can swap
+rank — which MRR and nDCG would read as a real change. Deleting it costs $0.003 to rebuild.
+
+---
+
 ## Roadmap
 
 | | |
 |---|---|
 | HW1 | single agent, hand-rolled graph tools, gate + error branch |
 | HW2 | four stores; scoped private/shared memory; planner + executor over a structured envelope; LLM-as-judge monitor |
+| HW3 | Telegram channel, GitHub webhook, heartbeat, silence as a recorded outcome, admin path |
+| HW4 | LangGraph orchestration + LangChain tools, with `run_agent`'s contract frozen |
+| HW5 | authored node summaries; hybrid dense+BM25 retrieval fused with RRF and reranked, behind `search_corpus`; evaluation harness |
 | Next | swap structural extraction to [GitNexus](https://github.com/abhigyanpatwari/GitNexus) via MCP/CLI while keeping the decision overlay ours; framework refactor; retrieval over the graph; evaluation (coupling drift, decision consistency, rework rate, context cost); observability; ELI5 agent |
