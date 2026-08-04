@@ -1,0 +1,46 @@
+# RADF — Postgres + pgvector for the HW5 retrieval layer.
+#
+# Owner: Berat Furkan Kocak (HW5, T14.4).
+#
+# This runs ONE service, deliberately. The agent itself stays on the host: the
+# repo has had no container infrastructure until now, and composing the whole
+# system would drag `tests/conftest.py`'s store isolation and the ambient
+# identity contextvars into a container boundary neither was designed for. The
+# dense index needs a database; nothing else here does.
+#
+# Port 5433, not 5432, so this never silently connects to (or collides with) a
+# Postgres someone already runs locally. A wrong-database write is exactly the
+# class of mistake that is invisible until it is expensive.
+#
+#   docker compose up -d
+#   RADF_PG_DSN=postgresql://radf:radf@localhost:5433/radf
+#
+# Credentials are development-only and intentionally in the file: this database
+# holds a re-derivable index of a public repo, binds to localhost, and keeping a
+# throwaway password out of .env is one less real secret to leak. The authored
+# overlay — the part that is NOT re-derivable — stays in sqlite under store/.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: radf-pgvector
+    environment:
+      POSTGRES_USER: radf
+      POSTGRES_PASSWORD: radf
+      POSTGRES_DB: radf
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - radf-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The index is rebuildable, so the compose file does not create the
+      # extension — retrieval.store issues `CREATE EXTENSION IF NOT EXISTS
+      # vector` on connect, which keeps schema creation in one place (the same
+      # rule overlay/db.py::init_db follows).
+      test: ["CMD-SHELL", "pg_isready -U radf -d radf"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  radf-pgdata:

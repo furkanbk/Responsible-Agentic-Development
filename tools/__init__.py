@@ -30,6 +30,7 @@ from .graph_query import query_component_graph
 from .graph_write import prune_graph_node
 from .memory_tools import retrieve_memory, save_memory
 from .repo_scan import scan_repository_structure
+from .retrieval_tools import search_corpus
 from .text_tools import diff_texts
 from .utility_tools import evaluate_expression
 
@@ -41,8 +42,14 @@ from .utility_tools import evaluate_expression
 # DERIVED layer, `retrieve_decisions` answers "why is it like this" from the
 # AUTHORED overlay. Two lookups per question, never one merged store
 # (ARCHITECTURE.md §6.1).
+#
+# `search_corpus` (HW5) sits ahead of both because it answers a question they
+# cannot: it takes a request phrased the way people phrase them and returns the
+# components it touches. The two exact lookups then take over once there is a
+# name to look up — ranked guess first, exact join second, in that order.
 TOOL_FUNCTIONS: list[Callable] = [
     scan_repository_structure,
+    search_corpus,
     query_component_graph,
     retrieve_decisions,
     retrieve_memory,

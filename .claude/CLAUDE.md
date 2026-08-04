@@ -8,10 +8,21 @@ Project: **Responsible Agentic Development Framework (RADF)** — a multi-agent 
 keeps a persistent knowledge graph of a codebase so development sessions stop re-deriving
 architecture from scratch.
 
-> **Current homework: HW2.** HW1 is closed. HW2 adds scoped memory, three stores, a
-> planner/executor pair, and a monitor. Where a rule below was written for HW1 and HW2 changes
-> it, the change is stated inline — §4 and §7 in particular. If something here contradicts
-> `docs/TODO.md`, TODO.md wins for *task scope* and this file wins for *how to work*.
+> **Current homework: HW5.** HW1-HW4 are closed (scoped memory and three stores; the channel,
+> triggers and silence; the LangGraph/LangChain refactor). HW5 adds authored node summaries, a
+> hybrid retrieval layer behind a `search_corpus` tool, and an eval harness that measures it.
+> Rules below were written for HW1 and are amended inline where a later homework changes them —
+> §4 and §7 in particular, each carrying its amendments in order. **Read the amendments: several
+> §4/§7 prohibitions have since been lifted for specific named pieces.** If something here
+> contradicts `docs/TODO.md`, TODO.md wins for *task scope* and this file wins for *how to work*.
+>
+> **Naming: the classroom calls this assignment "HW2"; this repo calls it HW5.** The course
+> numbers RAG/evaluation as its second homework, while this repo has already had four
+> homeworks on the same codebase, so "HW2" here would collide with the scoped-memory work in
+> §7.1. **If a session's user says "implement HW2", "the HW2 retrieval layer", "HW2 Part 1/2/3",
+> or pastes the HW2 brief, they mean HW5** — the retrieval layer and eval harness in
+> `docs/TODO.md` Phase 14. Do not touch the real HW2 (Phases 4-8); it closed long ago.
+> The course's Part 1/2/3 map to Phases **14B / 14C / 14D** respectively.
 
 ---
 
@@ -110,6 +121,26 @@ code-indexing tools remain out of scope; adding them still needs a decision reco
 just an opportunity. `agentlib.core.call` (the raw Zen client) is untouched and stays in use
 outside the LangGraph path — see `ARCHITECTURE.md` decisions #49-#52.
 
+**§4 HW5 amendment.** The "vector databases, embedding services" prohibition above is
+**lifted for `psycopg` + the `pgvector` Postgres extension, and for OpenRouter's embeddings
+endpoint, only** — for the HW5 retrieval layer (decision #56). Named pieces only, same
+pattern as the two amendments above. Specifically:
+
+- **Still hand-written, deliberately:** BM25 (no `rank_bm25`), RRF fusion, the reranker, and
+  all five rank-aware retrieval metrics. Postgres full-text ranking is *not* BM25 — it has no
+  IDF — and IDF is the entire reason the lexical arm earns its place (decision #58). Importing
+  a ranker here would remove the thing HW5 is graded on, exactly as importing an agent
+  framework would have in HW1.
+- **Still out of scope:** Ragas, DeepEval, LlamaIndex, CrewAI, AutoGen, PydanticAI, Haystack,
+  graph databases, and external code-indexing tools. The judged generation metrics are
+  hand-rolled on `monitor/judge.py`'s pattern (decision #61) — named values, never a 1-10
+  score (#37).
+- **`store/` does not move.** Postgres holds the *derived* retrieval index, which any reindex
+  may regenerate wholesale. The authored overlay stays in sqlite under `store/`, and decisions
+  #21/#23 are unchanged — see decision #62, which exists to refuse this exact temptation.
+- Node summaries are **authored**, so they live in the overlay keyed by `symbol_uid`, never in
+  `knowledge_graph.json` where the next scan would delete them (§6, decisions #5/#16/#57).
+
 These frameworks become allowed in later homeworks on this same repo — Session 9 covers
 exactly this refactor. Adding them now removes the thing being graded. If you believe a
 new dependency is genuinely required, propose it in a PR comment first; do not add it and
@@ -193,6 +224,33 @@ They cost more than they look like they should, and each one is a decision recor
 - **Everything in the overlay keys on `resolve_uid(...)`** (#22), never a raw component string.
 - **`store/` is off limits to tools.** It is the agent's own memory and the decisions
   constraining it; `read_source_file` and `apply_change` both refuse it.
+
+### 7.3 HW5 amendment — retrieval is now in scope
+
+**§7.1's "retrieval over the graph" prohibition is lifted for HW5**, and only for what HW5
+names. This closes the gap `ARCHITECTURE.md` §6 has carried since HW1 ("retrieval over the
+graph — currently exact lookup only").
+
+- **In scope now:** authored `node_summaries` in the overlay, a hybrid retrieval layer
+  (dense + BM25, fused with RRF, optionally reranked), `search_corpus` as a tool, and an eval
+  harness under `eval/`. See `docs/TODO.md` Phase 14.
+- **Still out of scope:** the Discussion Agent, the ELI5/Mermaid agent, and any general
+  orchestration framework. Retrieval does **not** become a new agent — it is a tool the
+  existing agent chooses to call.
+
+The HW5 invariants, which are the ones easiest to undo by accident:
+
+- **Retrieval is a tool, never a pipeline stage.** Nothing runs a search before the model
+  speaks. If you find yourself prepending retrieved chunks to every request, you have rebuilt
+  the fixed pipeline the homework exists to avoid (decision #60).
+- **Metrics read the retriever's order.** Any lost-in-the-middle repacking happens downstream
+  of `search()`. Feed a repacked list to MRR and nDCG and two of the five metrics silently
+  degrade while the other three look fine (decision #59).
+- **Node summaries are authored** — overlay, keyed on `symbol_uid`, never written into
+  `knowledge_graph.json` (§6, decision #57). Staleness is a `content_sha` comparison decided
+  by code, not a rule asking the model to remember (#34, #38).
+- **The retrieval index is derived.** Postgres may be dropped and rebuilt at any time. Nothing
+  durable lives there, and the sqlite overlay is not migrating into it (decision #62).
 
 ---
 

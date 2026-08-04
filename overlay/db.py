@@ -17,6 +17,8 @@ Tables:
     scratch_reads  which scratch keys each agent actually READ (see T6.5)
     silences       every time the agent deliberately said nothing, and why
                    (HW3, T9.4)
+    node_summaries authored prose describing what each module/symbol is for,
+                   so a vague request can be matched against it (HW5, T14.1)
 
 `sqlite3` is stdlib, so this adds no dependency (CLAUDE.md §4).
 """
@@ -126,7 +128,36 @@ CREATE TABLE IF NOT EXISTS silences (
 );
 CREATE INDEX IF NOT EXISTS idx_silences_vis ON silences(visibility);
 CREATE INDEX IF NOT EXISTS idx_silences_reason ON silences(reason_code);
+
+-- HW5 (T14.1). A node summary is AUTHORED prose about a DERIVED node, which is
+-- why it lives here and not in knowledge_graph.json: decision #16 lets any scan
+-- replace the derived layer wholesale, so a summary written into a node is a
+-- summary deleted by the next `scan_repository_structure`. Same reason
+-- decisions moved out (#5), same join key (#22).
+--
+-- `symbol` is NULL for the module card and set for a per-symbol card. SQLite
+-- does not treat NULLs as equal in a PRIMARY KEY, so the module card is keyed
+-- on the sentinel '' rather than NULL — see `upsert_node_summary`.
+--
+-- `content_sha` is the load-bearing column. It is what lets CODE decide a
+-- summary has gone stale against a changed file, instead of asking a model to
+-- notice (#34, #38).
+CREATE TABLE IF NOT EXISTS node_summaries (
+    symbol_uid     TEXT NOT NULL,   -- resolve_uid(component), e.g. 'Module:agentlib.guards'
+    symbol         TEXT NOT NULL,   -- '' = the module card itself
+    summary        TEXT NOT NULL,   -- one or two sentences: what it is
+    responsibility TEXT NOT NULL,   -- what it owns / when you would touch it
+    signature      TEXT,            -- for symbol cards, if known
+    content_sha    TEXT NOT NULL,   -- sha256 of the source file when summarised
+    author_id      TEXT NOT NULL,
+    source_run_id  TEXT,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (symbol_uid, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_summaries_uid ON node_summaries(symbol_uid);
 """
+
+MODULE_CARD = ""  # the `symbol` value standing for "the module itself"
 
 
 def connect(path: Optional[Path] = None) -> sqlite3.Connection:
@@ -341,6 +372,126 @@ def import_legacy_decisions(conn: sqlite3.Connection, graph: dict) -> int:
         inserted += 1
     conn.commit()
     return inserted
+
+
+# --- node summaries -----------------------------------------------------------
+#
+# No `visibility` column, deliberately. A decision is somebody's opinion and can
+# be private (#24); a description of what `agentlib/guards.py` does is a fact
+# about shared code, and every reader of the repo can already read the file.
+# Adding a scope here would imply a privacy boundary the source tree does not
+# have, and would put a filter on the retrieval path that protects nothing.
+
+def upsert_node_summary(
+    conn: sqlite3.Connection,
+    *,
+    component: str,
+    symbol: Optional[str],
+    summary: str,
+    responsibility: str,
+    content_sha: str,
+    author_id: str,
+    signature: Optional[str] = None,
+    source_run_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Write (or replace) one summary card. Returns the stored row.
+
+    `symbol=None` writes the module card. Unlike `decisions`, this table is
+    UPSERTed rather than append-only: a summary is a current description, not a
+    historical claim, and keeping every superseded wording would bloat the
+    retrieval corpus with near-duplicates of itself — which is the one failure
+    mode the reranker is worst at.
+
+    `component` is normalised through `resolve_uid` on the way in, so nothing
+    downstream sees a raw component string (#22).
+    """
+    uid = resolve_uid(component)
+    if not uid:
+        raise ValueError(f"component does not resolve to a symbol_uid: {component!r}")
+    row = {
+        "symbol_uid": uid,
+        "symbol": (symbol or MODULE_CARD).strip(),
+        "summary": summary.strip(),
+        "responsibility": responsibility.strip(),
+        "signature": (signature or "").strip() or None,
+        "content_sha": content_sha,
+        "author_id": author_id,
+        "source_run_id": source_run_id,
+        "updated_at": _now(),
+    }
+    conn.execute(
+        "INSERT INTO node_summaries (symbol_uid, symbol, summary, responsibility,"
+        " signature, content_sha, author_id, source_run_id, updated_at)"
+        " VALUES (:symbol_uid, :symbol, :summary, :responsibility, :signature,"
+        " :content_sha, :author_id, :source_run_id, :updated_at)"
+        " ON CONFLICT(symbol_uid, symbol) DO UPDATE SET"
+        " summary = excluded.summary, responsibility = excluded.responsibility,"
+        " signature = excluded.signature, content_sha = excluded.content_sha,"
+        " author_id = excluded.author_id, source_run_id = excluded.source_run_id,"
+        " updated_at = excluded.updated_at",
+        row,
+    )
+    conn.commit()
+    return row
+
+
+def query_node_summaries(
+    conn: sqlite3.Connection,
+    *,
+    symbol_uids: Optional[Iterable[str]] = None,
+) -> list[dict[str, Any]]:
+    """Summary cards, optionally narrowed to an impact set.
+
+    Passing an EMPTY iterable returns nothing, matching `query_decisions`: an
+    empty scope is a scope, not a wildcard (#25).
+    """
+    if symbol_uids is None:
+        rows = conn.execute(
+            "SELECT * FROM node_summaries ORDER BY symbol_uid, symbol"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    uids = list(symbol_uids)
+    if not uids:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM node_summaries"
+        f" WHERE symbol_uid IN ({','.join('?' * len(uids))})"
+        " ORDER BY symbol_uid, symbol",
+        uids,
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def all_summary_uids(conn: sqlite3.Connection) -> list[str]:
+    """Every `symbol_uid` carrying a summary — for the orphan check."""
+    rows = conn.execute(
+        "SELECT DISTINCT symbol_uid FROM node_summaries"
+    ).fetchall()
+    return [r["symbol_uid"] for r in rows]
+
+
+def stale_summaries(
+    conn: sqlite3.Connection,
+    current_sha: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Cards whose source file has changed since they were written.
+
+    `current_sha` maps `symbol_uid` -> sha256 of the file as it is now. A uid
+    ABSENT from that mapping is an **orphan**, not a stale card, and is not
+    returned here — the component moved or was deleted, which is a different
+    signal and is surfaced by the orphan check (see `all_summary_uids`).
+
+    Code decides staleness, not a model: this is a sha comparison, and a rule
+    asking an agent to keep summaries fresh is a rule it can silently skip
+    (#34, #38).
+    """
+    stale: list[dict[str, Any]] = []
+    for row in conn.execute("SELECT * FROM node_summaries").fetchall():
+        now_sha = current_sha.get(row["symbol_uid"])
+        if now_sha is not None and now_sha != row["content_sha"]:
+            stale.append(dict(row))
+    return stale
 
 
 # --- runs ---------------------------------------------------------------------

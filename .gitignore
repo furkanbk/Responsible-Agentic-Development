@@ -9,6 +9,12 @@ store/*.db
 store/*.db-journal
 store/runs/
 
+# HW5 retrieval cache: embedding vectors + rerank verdicts, keyed by content
+# hash. Purely DERIVED — a full rebuild is ~$0.002 and ~41s — and per-developer,
+# so it is never shared through git. Note `store/*.db` above does not cover it:
+# it lives one level down, in store/cache/.
+store/cache/
+
 # Notebook demo artifacts from the guidance scaffold
 watchlist.json
 watchlist_b.json

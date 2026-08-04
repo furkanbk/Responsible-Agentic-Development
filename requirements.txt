@@ -7,5 +7,12 @@ langgraph>=1.2.10
 langchain>=1.3.14
 langchain-openai>=1.4.1
 
+# HW5 — retrieval layer, CLAUDE.md §4 HW5 amendment (decision #56).
+# psycopg is the pgvector client; the vectors themselves come from OpenRouter over
+# plain HTTP, so there is no embedding SDK here. BM25, RRF and the reranker are
+# hand-written (decisions #58, #59) — no rank_bm25, no vector-store SDK, and no
+# eval library: Ragas and DeepEval both stay out (§4 amendment).
+psycopg[binary]>=3.1
+
 # Tests only
 pytest>=8.0.0
