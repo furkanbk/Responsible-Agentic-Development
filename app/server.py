@@ -304,6 +304,14 @@ _STDOUT_PATTERNS: list[tuple[re.Pattern, str, str, str]] = [
     # lane because that is what it is; the detail names who decided to make it,
     # so the panel shows the step without claiming the model picked it.
     (re.compile(r"^\s*\[retrieval\] (.+)$"), "tool", "planner", r"\1"),
+    # The impact walk and the decision lookups, same story: real calls to the
+    # same tools the loop offers, made by Python so the model cannot be talked
+    # out of the hop cap (#34), and therefore in no run_agent trace either.
+    # Without these the plan showed `impacted=2` with nothing to say where the 2
+    # came from — "the walk found one dependent" and "the walk never ran" looked
+    # identical.
+    (re.compile(r"^\s*\[graph\] (.+)$"), "tool", "planner", r"\1"),
+    (re.compile(r"^\s*\[decisions\] (.+)$"), "tool", "planner", r"\1"),
     # Stdout-only: the seed and the hop cap. `impacted=N` is the count the plan
     # envelope later itemises, and the cap is #34's "visible in the trace".
     (re.compile(r"^\[planner\] (.+)$"), "plan", "planner", r"\1"),

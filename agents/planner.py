@@ -126,6 +126,12 @@ def run_planner(
 
     # --- 2. verify the seed is in the graph ----------------------------------
     probe = query_component_graph(seed, "all")
+    if verbose:
+        print(f"  [graph] query_component_graph(component={seed}, relation=all) -> "
+              + (f"error: {probe['error']}" if probe.get("error")
+                 else (f"found {(probe.get('node') or {}).get('id')}, "
+                       f"{len(probe.get('related') or [])} related"
+                       if probe.get("found") else "not in graph")))
     if probe.get("error"):
         # A corrupt/unreadable graph is a fault, not a question for a human.
         return AgentResult.failed(
@@ -136,7 +142,7 @@ def run_planner(
     if probe.get("found"):
         # Walk in the graph's own id space, seeded from the resolved node id.
         seed_component = (probe.get("node") or {}).get("id") or seed
-        order = _impact_walk(seed_component, max_hops)
+        order = _impact_walk(seed_component, max_hops, verbose=verbose)
     else:
         # An empty list would be a claim the executor may act alone; instead we
         # stop and ask (T6.2b). The component is still carried so the plan is
@@ -168,6 +174,15 @@ def run_planner(
                 f"decision lookup failed for {component!r} ({got['error']})",
                 agent="planner")
         records = got.get("decisions") or []
+        if verbose:
+            # The other half of the join, and the half that decides whether the
+            # executor is allowed to proceed. Traced for the same reason as the
+            # walk: a plan showing `constraints: 1` should say which lookup
+            # produced it (§6.1 — two lookups, joined on symbol_uid).
+            print(f"  [decisions] retrieve_decisions(component={component}) -> "
+                  f"{len(records)} decision(s)"
+                  + (": " + ", ".join(str(r.get("decision_id")) for r in records)
+                     if records else ""))
         for rec in records:
             did = rec.get("decision_id")
             if did and did not in constraints:
@@ -405,31 +420,63 @@ def _component_to_path(component: str) -> str:
     return c.replace(".", "/") + ".py"
 
 
-def _impact_walk(seed_component: str, max_hops: int) -> list[str]:
+def _impact_walk(seed_component: str, max_hops: int,
+                 *, verbose: bool = True) -> list[str]:
     """Transitive `imported_by` from `seed_component`, capped at `max_hops`.
 
     Runs in the graph's own id space (bare component ids, which is what
     `query_component_graph` resolves and returns), breadth-first and
     deterministic. The cap is enforced HERE, in code — an uncapped walk on a
     real repo reaches everything and permits every write (T6.2a).
+
+    **Traced.** Every hop prints the `query_component_graph` call it made and
+    what came back. These are real tool calls — the same tool the loop offers —
+    made by Python rather than chosen by the model (#34), so like the planner's
+    retrieval (#72) they reach no `run_agent` trace. Untraced, the whole graph
+    walk was invisible: the plan showed `impacted=2` with nothing to say where
+    the 2 came from, and "the walk found one dependent" was indistinguishable
+    from "the walk never ran". The cap has to be visible in the trace, and a cap
+    with no walk under it is not.
     """
     seen = {seed_component}
     order = [seed_component]
     frontier = [seed_component]
-    for _ in range(max(0, max_hops)):
+    for hop in range(1, max(0, max_hops) + 1):
         nxt: list[str] = []
         for component in frontier:
             got = query_component_graph(component, "imported_by")
             if got.get("error") or not got.get("found"):
+                if verbose:
+                    print(f"  [graph] query_component_graph(component={component}, "
+                          f"relation=imported_by) -> "
+                          f"{got.get('error') or 'not in graph'}")
                 continue
-            for dependent in got.get("related") or []:
-                if dependent not in seen:
-                    seen.add(dependent)
-                    order.append(dependent)
-                    nxt.append(dependent)
+            found = list(got.get("related") or [])
+            fresh = [d for d in found if d not in seen]
+            for dependent in fresh:
+                seen.add(dependent)
+                order.append(dependent)
+                nxt.append(dependent)
+            if verbose:
+                print(f"  [graph] query_component_graph(component={component}, "
+                      f"relation=imported_by) -> hop {hop}/{max_hops}: "
+                      f"{len(found)} importer(s)"
+                      + (f", {len(fresh)} new: {', '.join(fresh)}" if fresh
+                         else ", none new"))
         frontier = nxt
         if not frontier:
+            if verbose:
+                print(f"  [graph] walk closed at hop {hop} — impact set is "
+                      f"{len(order)} component(s): {', '.join(order)}")
             break
+    else:
+        if verbose and max_hops > 0:
+            # Stopped by the cap, not by running out of graph. Worth saying out
+            # loud: it means the true blast radius is LARGER than the plan's, and
+            # that is the number a reviewer needs (T6.2a).
+            print(f"  [graph] hop cap {max_hops} reached with {len(frontier)} "
+                  f"component(s) still unexplored — impact set is "
+                  f"{len(order)}, the real reach is wider")
     return order
 
 
