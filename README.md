@@ -23,7 +23,7 @@ each other, and one engineer's private preference must never surface in another'
 | | |
 |---|---|
 | Homework | HW5 — retrieval layer + evaluation harness *(the classroom calls this one "HW2"; see [`docs/TODO.md`](docs/TODO.md) § HW5)* |
-| Stage | HW1-HW4 closed. HW5 Part 1 (retrieval layer) and Part 2 (retrieval metrics): **done**. Part 3 (generation metrics), Part 4 (report): in progress |
+| Stage | HW1-HW4 closed. HW5 Part 1 (retrieval layer), Part 2 (retrieval metrics) and Part 3 (generation metrics): **done**. Part 4 (report assembly): in progress |
 | Tests | 328 passing + 10 online retrieval tests |
 | Course | Coding Assistants as Agentic Systems |
 
@@ -759,9 +759,227 @@ that a system which correctly *cannot* answer should not be graded as if it retr
 
 ### Part 3 — Generation metrics
 
-*Owner: Dias (Phase 14D). Table to be filled in: at least three of faithfulness, answer
-relevance, context precision, context recall — with and without reranking, per failure category,
-and a statement of what was done about judge bias.*
+*Owner: Dias (Phase 14D). The judged half: four metrics, an LLM call each, over answers actually
+generated from the retrieved passages.* Harness: `python -m eval.run_gen_eval`; scorers in
+`eval/generation_metrics.py`, the answer under test in `eval/answer.py`, the answer/verdict cache
+in `eval/cache.py`, the 30-case set in `eval/gen_cases.json`.
+
+**Setup.** For each case: `search(query, k=5)` → the five passages in **retriever order** → one
+`gpt-5.4-nano` answer capped at ~120 words → judged by `gpt-5.5`. The eval set **extends**
+Alejandro's `cases.json` (24 cases) with six more, 30 in total, so Parts 2 and 3 score the *same*
+questions and a disagreement between them is a statement about one system rather than a comparison
+of two question sets (decision #69). The six added ones are questions retrieval metrics cannot
+fail but a generator can: material in the corpus that pulls the wrong way (`g01`, `g03`), a
+measured number that invites invention (`g02`), two concepts that are easy to conflate (`g04`), an
+error branch easy to state backwards (`g05`), and a third out-of-corpus question that sounds far
+more answerable than the base set's kubernetes/lambda pair (`g06`).
+
+These ran over a **1,348-chunk index** — a re-scan on 2026-08-05 that picked up `eval/` and the
+modules Phase 14D added, against Part 2's 1,295. Re-running Part 2's harness over *this* index
+moves its numbers (hit rate@5 0.727 vs 0.682, MRR@5 0.395 vs 0.504) without moving its
+conclusions, and those re-run numbers are the ones compared against below.
+
+#### How a judged number is produced here
+
+Hand-rolled, not Ragas or DeepEval (decision #61), and the reason shows up in the mechanics: **the
+model proposes, the code decides** — the same split `monitor/judge.py` uses (#37, #68).
+
+* The judge is never asked for a **score**. It sorts things into **named** buckets: a claim is
+  `supported` / `contradicted` / `unsupported`, a passage is `relevant` / `irrelevant`, an answer
+  `answers` / `partially_answers` / `evades`. The float is applied afterwards, in code.
+* **Faithfulness** and **context recall** work claim by claim — the answer (or the reference
+  answer) is split into atomic claims and each is checked against the passages — so a long answer
+  dilutes its own score instead of inflating it.
+* Every `supported` / `present` label must carry a **verbatim quote**, and the harness looks that
+  quote up in the passages. One that is not there is **downgraded in code**, not trusted. It is
+  the one judged assertion that is mechanically falsifiable, and it turns "did the judge
+  over-credit grounding?" into a count the run reports.
+* **Undefined is not zero**, exactly as in Part 2 (#67): an answer with no factual claims has no
+  faithfulness, and `mean` skips it rather than scoring it 0.
+* **Out-of-corpus cases run one metric, `abstention`** (`abstains` / `hedges` / `answers_anyway`),
+  reported separately. Grading a question the corpus cannot answer on "did it answer" would score
+  the only correct behaviour worst.
+
+#### The numbers
+
+**Reranking ON, all 27 scored cases** (3 out-of-corpus excluded, reported below):
+
+| metric | score |
+|---|---|
+| faithfulness | 0.959 |
+| answer relevance | 1.000 |
+| context precision | 0.748 |
+| context recall | 0.628 |
+
+**Reranking on vs. off — like for like.** The reranking-off run scores the stratified 14-case
+subset (below), so its average covers *different cases*; on categories this uneven, that alone
+moves a number. The honest comparison is over the 12 scored cases both runs saw:
+
+| metric | rerank ON | rerank OFF | delta |
+|---|---|---|---|
+| faithfulness | 0.978 | 0.948 | +0.030 |
+| answer relevance | 1.000 | 1.000 | +0.000 |
+| context precision | 0.733 | 0.550 | **+0.183** |
+| context recall | 0.559 | 0.514 | +0.045 |
+
+**What reranking bought, in answers rather than ranks.** Almost all of it lands on **context
+precision** (+0.183): with reranking off, 45% of what went into the prompt was judged irrelevant;
+with it on, 27%. It improved in **all six categories**, +0.100 to +0.300 — the one unambiguous
+result in this section. That is the same win Part 2 measured, seen from the other end: Part 2 said
+reranking pulls golden chunks into the cut, and the judge says the cut it produces has less junk
+in it.
+
+What it did **not** buy is a much better answer: faithfulness moves +0.030 on a metric already at
+0.95, and answer relevance does not move at all. **A large retrieval win became a small answer
+win** — the finding, not a disappointment, and there are two measured reasons for it. At k=5 the
+generator needs only *one* good passage, so cleaning up the other four improves the context far
+more than the answer. And reranking is frequently a **no-op at this depth**: for **5 of the 14
+subset cases the top-5 passages were byte-identical with and without it** (`q02`, `q06`, `q07`,
+and both out-of-corpus cases — visible because the answer cache, keyed on the context ids,
+returned the same answer for both configurations). A third of the comparison is measuring a
+setting that changed nothing.
+
+#### Per failure category (reranking ON)
+
+An average over a mixed set hides which category the system is bad at, which is why the cases are
+tagged:
+
+| category | faithfulness | answer relevance | context precision | context recall |
+|---|---|---|---|---|
+| exact-term | 1.000 | 1.000 | 0.900 | 0.858 |
+| why-question | 1.000 | 1.000 | 0.629 | 1.000 |
+| acronym | 1.000 | 1.000 | 0.867 | 0.383 |
+| lexical-vs-semantic | 0.958 | 1.000 | 0.733 | 0.597 |
+| multi-hop | 0.892 | 1.000 | 0.750 | 0.369 |
+| near-duplicate | 0.877 | 1.000 | 0.733 | **0.103** |
+
+**`near-duplicate` is the failure, and both halves of the harness agree on it.** Context recall
+0.103 means the retrieved passages contain roughly a tenth of what the reference answer says —
+Part 2 measured the same category worst on recall (0.188 at k=5), and Part 1 named the cause:
+nothing deduplicates by source document, so a section split into near-copies fills the cut with
+one document said five ways. `q22_operating_rules` retrieves five chunks of the same rules file
+and scores context recall **0.000**.
+
+**`why-question` inverts the usual shape**: perfect context recall (1.000) with the *worst*
+context precision (0.629). A decision record is one atomic chunk that answers the whole question,
+so recall saturates at one hit while the other four passages are prose *about* the topic. Low
+precision here is not a retrieval failure; it is what "one chunk was enough" looks like.
+
+**`multi-hop` is where reranking hurt.** On the like-for-like subset it is the only category whose
+faithfulness *fell* with reranking on (−0.101), and its context recall fell too (−0.065, with
+`acronym` −0.100 the only other recall regression). A question needing two chunks is exactly where
+a reranker that scores each candidate *on its own* mis-serves: the second chunk looks weakly
+relevant by itself and gets demoted, so the answer is built on one hop of a two-hop question.
+Part 2 saw the same shape from the rank side — multi-hop MRR was *better* with reranking off.
+
+#### Three cases worth reading, not averaging
+
+**Faithfulness is grounding, not correctness — measured, not asserted.**
+`q22_operating_rules` scores faithfulness **1.000** and answer relevance **1.000** with context
+recall **0.000**. The answer quotes rules R3 and R7 verbatim out of the retrieved chunks, so every
+claim is genuinely supported; they are simply not the rules the question was about. **A perfectly
+faithful, perfectly relevant, substantively wrong answer** is a thing this metric set will happily
+produce, and it is the strongest argument in this report for keeping the golden-anchor retrieval
+metrics alongside the judged ones.
+
+**Where faithfulness did fire**: `g03_which_tools_gated` scores **0.692**, the lowest in the set,
+on an answer that states `prune_graph_node` does *not* require approval — the exact inversion of
+the one gated tool in this repo. The claim-level check caught it because the passages state the
+opposite; a whole-answer "is this faithful?" verdict would have seen a confident, well-sourced
+paragraph.
+
+**A corpus gap, not a ranking one**: `g05_embeddings_down` gets context recall **0.000** and the
+model correctly refuses — the degradation-to-lexical-only branch lives in `retrieval/search.py`'s
+*source*, and the component cards summarise what a module does, not what it does when an arm
+fails. Retrieval returned the two right modules and the corpus still could not answer. That is a
+summariser limitation surfacing as a generation metric, and it is filed in `docs/TODO.md` § HW5.
+
+#### Out-of-corpus: retrieval fails, the answer does not
+
+All **3 out-of-corpus cases abstained** (`abstains=3, hedges=0, answers_anyway=0` → abstention
+**1.000**), including `g06_oncall_oob`, written to sound like an ordinary internal question. Part 1
+found that retrieval "returns confident junk at every stage" for these, and it still does — but
+the generator refused on top of that junk every time. **A retrieval failure that did not become an
+answer failure.** The instruction that permits refusal is doing the work here, and the honest
+caveat is that 3 cases is a small sample for a claim about hallucination.
+
+#### Judge bias — what was done, and what was not
+
+* **Self-preference.** Answers are generated on `CHEAP`, judged on `STRONG`, so nothing grades its
+  own output. Both are one vendor's models behind one endpoint, so this is **reduced, not
+  eliminated** — an independent check would need a second provider, which this repo does not have.
+  Stated rather than claimed away.
+* **Position.** `context_precision` shows the judge the passages in a **deterministically shuffled
+  order** (seeded from the question, so the run still replays from cache) and maps verdicts back to
+  retriever order afterwards. Otherwise a judge grading a ranked list top-down partly re-reports the
+  ranking it was given. `tests/test_eval_scorers.py` pins the de-shuffle, because a mitigation that
+  scrambles its own output is worse than none.
+* **Verbosity.** Two defences, since a word cap in a prompt is a request rather than a guarantee:
+  answers are capped at 120 words, and the two claim-based metrics are ratios over claims, so
+  padding dilutes rather than inflates. **Measured: mean 73 words, max 102, 0 truncated** — the cap
+  held, and it is reported instead of assumed.
+* **Unbacked verdicts.** `0 claims downgraded` for an unfindable quote and `0 verdicts dropped`
+  across every claim-level verdict in both runs: this judge's quotes were all genuinely there. The
+  guard is worth keeping and worth reporting as a zero — the offline suite proves it fires when a
+  quote is invented, so the zero is a measurement of this judge, not a dead code path.
+* **A bias that did bite, and it was not the judge's.** The first live run returned
+  `reasoning_tokens == max_output_tokens` and an empty body on 2 of the first 8 verdicts:
+  `gpt-5.5` reasons inside the output budget, so a cap sized for the JSON is spent thinking. Those
+  came back as **ungradeable rather than as low scores**, which is the branch working — a truncated
+  verdict scored 0 would have looked like an unfaithful answer. Caps were raised from measured
+  reasoning cost; the final run has **0 ungradeable**.
+* **Not addressed:** one judge model, one prompt, one sample per verdict. No self-consistency
+  voting, no second judge, no human-labelled subset to calibrate against. With 27 scored cases,
+  differences under roughly 0.05 in these tables should not be read as real.
+
+#### Which subset the reranking-off run used, and why
+
+The 14 cases named in `gen_cases.json::rerank_off_subset`: **two per failure category**, seven
+categories, chosen as the lowest-numbered pair in each. Judged metrics cost a call each, so the
+second configuration is a subset by design — but a *random* subset can delete an entire category,
+and the per-category table is the whole reason the cases are tagged. It is declared in the data
+file rather than picked at run time so that it is visibly not a post-hoc selection of the cases
+that made reranking look good.
+
+#### What these numbers cost
+
+The assignment's ordering argument — cheap metrics first — with a measured figure:
+
+| | calls | spend |
+|---|---:|---:|
+| answers under test (`gpt-5.4-nano`) | 39 | $0.012 |
+| faithfulness | 36 | $1.762 |
+| context recall | 36 | $1.012 |
+| context precision | 36 | $0.451 |
+| answer relevance | 36 | $0.161 |
+| abstention | 3 | $0.010 |
+| **total** | **186** | **$3.41** |
+
+Two things stand out. **Judging cost 278× what generating cost** — $3.40 against $0.012, about
+$0.077 per case-run — because the judge reasons over the full context to grade 73 words.
+And **the cheapest informative metric carried the signal**: context precision ($0.45) is where the
+reranking difference showed up, while faithfulness ($1.76, the largest line) moved 0.030 and
+answer relevance ($0.16) returned 1.000 for all 27 cases and separated nothing. Answer relevance
+is the metric to drop or redefine first: as defined here it treats any on-topic response —
+including `g05`'s well-explained refusal — as addressing the question, so on this eval set it is a
+formality. Part 2's five metrics, by contrast, cost nothing and re-run for free.
+
+Every verdict is cached (`store/cache/eval_cache.db`), so re-running the harness replays instead of
+re-sampling. That is not thrift: an uncached judged run re-samples both the answer and the verdict,
+and the table moves for reasons unrelated to whatever change is being measured.
+
+#### What Parts 2 and 3 disagree about
+
+Mostly they agree — `near-duplicate` is worst in both, `exact-term` strongest in both, and
+reranking is a real win in both. One category disagrees sharply: **`lexical-vs-semantic` is Part
+2's worst category** (hit rate 0.250, recall 0.125 at k=5) **and one of Part 3's better ones**
+(context precision 0.733, context recall 0.597, faithfulness 0.958). Both measurements are correct
+and they measure different things: the golden anchors name *specific* chunks, and for a paraphrased
+question the retriever returns a *different* chunk that says the same thing — a miss by anchor, a
+hit by judge. The lesson is about the golden set, not about retrieval: on a corpus that documents
+itself repeatedly, a sparse anchor list understates recall, and the judged metric is the one that
+notices. Which of the two to trust depends on the question being asked — "did we retrieve the chunk
+we meant?" is Part 2's; "could the model answer from what came back?" is this one's.
 
 ### Part 4 — What the tables disagree about
 
@@ -777,6 +995,11 @@ python -m overlay.summarize           # node cards -> store/radf.db (idempotent)
 python -m retrieval.index             # chunk, embed, load  (~40s, ~$0.003)
 python -m retrieval.index --dry-run   # chunk + report only, embeds nothing
 pytest tests/test_retrieval_online.py # 10 online tests, throwaway schema, dropped after
+
+python -m eval.run_eval               # Part 2: the five rank metrics — free, no LLM call
+python -m eval.run_gen_eval --json store/part3_results.json   # Part 3: judged (~$3.40 cold)
+python -m eval.run_gen_eval --limit 2 --rerank-only           # a cheap smoke run first
+pytest tests/test_eval_scorers.py     # 32 offline scorer tests + 1 online judged call
 ```
 
 The embedding and rerank cache is one gitignored sqlite file under `store/cache/`. It is kept
