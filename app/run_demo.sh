@@ -29,6 +29,10 @@ SERVICE_PID="$LOG_DIR/service.pid"
 APP_PID="$LOG_DIR/app.pid"
 PORT="${PORT:-8080}"
 CONTAINER="radf-pgvector"
+# service.py already defaults to strong; passed explicitly so the demo's model
+# is visible in `ps` and in this file, and so `MODEL=cheap ./app/run_demo.sh`
+# is a one-word change rather than an edit.
+MODEL="${MODEL:-strong}"
 
 mkdir -p "$LOG_DIR"
 
@@ -112,9 +116,9 @@ else
 fi
 
 # --- 2. the Telegram service --------------------------------------------------
-say "starting service.py (telegram)…"
+say "starting service.py (telegram, --model $MODEL)…"
 : > "$SERVICE_LOG"
-"$PY" -u "$REPO_ROOT/service.py" >>"$SERVICE_LOG" 2>&1 &
+"$PY" -u "$REPO_ROOT/service.py" --model "$MODEL" >>"$SERVICE_LOG" 2>&1 &
 echo $! > "$SERVICE_PID"
 sleep 3
 if alive "$SERVICE_PID" && grep -q "\[service\] connected as" "$SERVICE_LOG"; then

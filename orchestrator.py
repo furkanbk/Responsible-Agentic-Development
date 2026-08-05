@@ -176,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--thread", default="default")
     parser.add_argument("--component", default="",
                         help="optional starting component for the impact walk")
-    parser.add_argument("--model", choices=["cheap", "strong"], default="cheap")
+    parser.add_argument("--model", choices=["cheap", "strong"], default="strong")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 

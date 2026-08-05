@@ -408,7 +408,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="exercise the queue with a scripted channel, no network")
-    parser.add_argument("--model", choices=["cheap", "strong"], default="cheap")
+    # `strong` by default (decision #76): the cheap model's failure modes on this
+    # workload are parse-level, not quality-level — a duplicated plan object, an
+    # empty seed — and those surface as "the planner failed", which reads as a
+    # broken system rather than a cheap one. `--model cheap` is still there.
+    parser.add_argument("--model", choices=["cheap", "strong"], default="strong")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--chats", default="",
                         help="comma-separated chat ids to serve (default: any)")
