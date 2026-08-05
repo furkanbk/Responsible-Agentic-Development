@@ -24,6 +24,46 @@ open http://127.0.0.1:8080
 Drop images into `app/memes/` (`.png .jpg .jpeg .gif .webp .bmp .avif`). They are
 gitignored — they are per-demo, and binary.
 
+## Reset between runs
+
+```bash
+python app/reset_demo.py            # undo the demo's edit and its decision
+python app/reset_demo.py --check    # report only; exit 1 if not reset
+python app/reset_demo.py --reindex  # also rebuild the Postgres index
+```
+
+A demo run leaves exactly two marks: `app/theme.py` is edited by the `/change`
+beat, and a decision lands on `Module:app.theme`. Reset undoes those two and
+nothing else — the `DELETE` is scoped `WHERE symbol_uid = 'Module:app.theme'`,
+never a bare `DELETE FROM decisions`, because that table is the authored layer
+no process may regenerate.
+
+**Reset does not cost you the index.** Graph nodes come from the file *tree*, and
+summary cards describe what a module is *for* — "holds the page's colours" is
+true whichever colour is in there — so restoring a constant invalidates neither,
+and the Postgres chunks built from those cards are equally unaffected.
+`app.theme` stays searchable throughout. `content_sha` is the one value that goes
+stale during a run, and restoring `theme.py` to its committed bytes restores it
+too. `--reindex` exists for the one case that does need it: you recorded a
+decision *and* rebuilt the index mid-demo, which would leave a chunk for a
+decision that no longer exists.
+
+## The "what does the agent know?" panel
+
+The second button on the page opens `app/` as the agent sees it: every `app.*`
+graph node, and for each one its authored summary cards.
+
+It shows the two layers side by side because their separation is the
+architecture (#5, #57) — the **graph node** is derived and any scan may replace
+it wholesale; the **summary card** is authored into the sqlite overlay and no
+scan may touch it; they join on `symbol_uid` and are never merged. Under each
+card is the chunk built from it, **fetched from Postgres by `symbol_uid`**, so
+what you read is byte-for-byte the passage `search_corpus` returns when that
+module is a hit — not a paraphrase reconstructed by the page.
+
+Cards are written by `overlay/summarize.py` (author id `summarizer`), not by the
+executor.
+
 ## Where the trace comes from
 
 | source | what it gives | when |

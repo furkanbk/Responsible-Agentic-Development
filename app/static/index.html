@@ -60,7 +60,91 @@
   }
   .empty code { color: var(--text); }
 
+  .controls { display: flex; align-items: flex-start; gap: 34px; }
   .btn-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+  /* The secondary control. Deliberately not a second red circle: this one does
+     not change the product, it explains it. */
+  .know-btn {
+    width: auto; height: auto; border-radius: 999px;
+    padding: 13px 20px; margin-top: 14px;
+    background: transparent; border: 1px solid var(--line);
+    color: var(--dim); font: inherit; font-size: 13px;
+    box-shadow: none; transition: border-color .15s ease, color .15s ease;
+  }
+  .know-btn:hover { border-color: var(--c-agent); color: var(--c-agent); filter: none; }
+  .know-btn:active { transform: none; box-shadow: none; }
+
+  /* --- the knowledge panel --- */
+  .sheet {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    background: rgba(6,8,12,.72); backdrop-filter: blur(3px);
+    align-items: center; justify-content: center; padding: 4vh 3vw;
+  }
+  .sheet.open { display: flex; }
+  .sheet-inner {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    width: min(1040px, 100%); max-height: 92vh; display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .sheet-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 13px 18px; border-bottom: 1px solid var(--line);
+  }
+  .sheet-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .sheet-head p { margin: 0; font-size: 12px; color: var(--dim); }
+  .close {
+    margin-left: auto; width: auto; height: auto; border-radius: 8px;
+    padding: 6px 11px; background: transparent; border: 1px solid var(--line);
+    color: var(--dim); font: inherit; font-size: 12px; box-shadow: none;
+  }
+  .close:active { transform: none; box-shadow: none; }
+
+  .sheet-body { display: flex; min-height: 0; flex: 1 1 auto; }
+  .mod-list {
+    flex: 0 0 260px; border-right: 1px solid var(--line);
+    overflow-y: auto; padding: 8px;
+  }
+  .mod {
+    display: block; width: 100%; text-align: left; height: auto; border-radius: 8px;
+    padding: 9px 11px; background: transparent; border: 1px solid transparent;
+    color: var(--text); font: inherit; box-shadow: none;
+  }
+  .mod:hover { background: #171b24; filter: none; }
+  .mod:active { transform: none; box-shadow: none; }
+  .mod.sel { background: #1a2130; border-color: var(--c-agent); }
+  .mod code { font-size: 13px; }
+  .mod small { display: block; color: var(--dim); font-size: 11px; margin-top: 2px; }
+
+  .mod-detail { flex: 1 1 auto; overflow-y: auto; padding: 16px 20px; }
+  .mod-detail h3 {
+    margin: 0 0 3px; font-size: 15px; font-family: ui-monospace, monospace;
+  }
+  .mod-detail .sub { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
+  .card {
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 11px;
+  }
+  .card h4 {
+    margin: 0 0 7px; font-size: 13px; font-family: ui-monospace, monospace;
+    color: var(--c-tool);
+  }
+  .card .row2 { font-size: 13px; margin-bottom: 6px; }
+  .card .lbl {
+    color: var(--dim); font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .1em; display: block; margin-bottom: 2px;
+  }
+  .card .meta { color: var(--dim); font-size: 11px; font-family: ui-monospace, monospace; }
+  .chunk {
+    background: #0b0e14; border: 1px dashed var(--line); border-radius: 8px;
+    padding: 10px 12px; margin-top: 8px;
+    font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--c-plan);
+    white-space: pre-wrap; overflow-x: auto;
+  }
+  .note {
+    color: var(--dim); font-size: 12px; line-height: 1.6;
+    border-left: 2px solid var(--line); padding-left: 12px; margin-bottom: 16px;
+  }
   button {
     width: 92px; height: 92px; border-radius: 50%; border: none; cursor: pointer;
     background: radial-gradient(circle at 34% 30%, var(--red-hot), var(--red) 62%, var(--red-deep));
@@ -127,9 +211,28 @@
   <div class="meme-frame" id="frame">
     <div class="empty">no memes yet — drop images into <code>app/memes/</code></div>
   </div>
-  <div class="btn-wrap">
-    <button id="btn" aria-label="change the meme"></button>
-    <div class="caption">{{BUTTON_CAPTION}}</div>
+  <div class="controls">
+    <div class="btn-wrap">
+      <button id="btn" aria-label="change the meme"></button>
+      <div class="caption">{{BUTTON_CAPTION}}</div>
+    </div>
+    <button class="know-btn" id="know">what does the agent know about this app?</button>
+  </div>
+</section>
+
+<section class="sheet" id="sheet">
+  <div class="sheet-inner">
+    <div class="sheet-head">
+      <div>
+        <h2>app/ — as the agent sees it</h2>
+        <p>graph nodes (derived) joined to their authored summary cards on <code>symbol_uid</code></p>
+      </div>
+      <button class="close" id="close">close</button>
+    </div>
+    <div class="sheet-body">
+      <div class="mod-list" id="modlist"></div>
+      <div class="mod-detail" id="moddetail"></div>
+    </div>
   </div>
 </section>
 
@@ -166,6 +269,122 @@ async function nextMeme() {
 }
 btn.addEventListener('click', nextMeme);
 nextMeme();
+
+// --- the knowledge panel ---
+// Shows the two layers side by side because their separation is the point: the
+// graph node is derived and any scan may replace it, the summary card is
+// authored and no scan may touch it, and they join on symbol_uid. The chunk text
+// is fetched from Postgres rather than rebuilt here, so what you read is exactly
+// what search_corpus would return.
+const sheet = document.getElementById('sheet');
+const modlist = document.getElementById('modlist');
+const moddetail = document.getElementById('moddetail');
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+async function openSheet() {
+  sheet.classList.add('open');
+  modlist.replaceChildren(el('div', 'note', 'loading…'));
+  moddetail.replaceChildren();
+  const {modules} = await (await fetch('/api/modules', {cache: 'no-store'})).json();
+  modlist.replaceChildren();
+  if (!modules.length) {
+    modlist.appendChild(el('div', 'note',
+      'No app.* nodes in the graph yet — run a repo scan, then overlay.summarize.'));
+    return;
+  }
+  modules.forEach((m, i) => {
+    const b = el('button', 'mod');
+    b.appendChild(el('code', null, m.id));
+    b.appendChild(el('small', null,
+      `${m.path} · ${m.cards} card${m.cards === 1 ? '' : 's'}` +
+      (m.symbols.length ? ` · ${m.symbols.length} symbols` : '')));
+    b.onclick = () => {
+      [...modlist.children].forEach(c => c.classList.remove('sel'));
+      b.classList.add('sel');
+      showModule(m);
+    };
+    modlist.appendChild(b);
+    if (i === 0) b.click();
+  });
+}
+
+async function showModule(m) {
+  moddetail.replaceChildren(el('div', 'note', 'loading…'));
+  const d = await (await fetch('/api/module?uid=' + encodeURIComponent(m.uid),
+                               {cache: 'no-store'})).json();
+  moddetail.replaceChildren();
+  moddetail.appendChild(el('h3', null, m.id));
+  moddetail.appendChild(el('div', 'sub', `${m.uid}  ·  ${m.path}`));
+
+  if (!d.cards.length) {
+    moddetail.appendChild(el('div', 'note',
+      'No summary card yet. Cards are authored by overlay/summarize.py into the ' +
+      'sqlite overlay, keyed on symbol_uid — never into knowledge_graph.json, ' +
+      'where the next scan would delete them.'));
+    return;
+  }
+
+  moddetail.appendChild(el('div', 'note',
+    'Each card is authored prose in the overlay. The dashed block under it is the ' +
+    'chunk built from that card and indexed in Postgres — byte for byte what ' +
+    'search_corpus returns when this module is a hit.'));
+
+  const byName = {};
+  d.chunks.forEach(c => { byName[c.symbol || ''] = c; });
+
+  d.cards.forEach(c => {
+    const card = el('div', 'card');
+    card.appendChild(el('h4', null, c.symbol));
+    if (c.signature) {
+      const s = el('div', 'row2');
+      s.appendChild(el('span', 'lbl', 'signature'));
+      s.appendChild(el('code', null, c.signature));
+      card.appendChild(s);
+    }
+    const sum = el('div', 'row2');
+    sum.appendChild(el('span', 'lbl', 'summary'));
+    sum.appendChild(document.createTextNode(c.summary));
+    card.appendChild(sum);
+
+    const resp = el('div', 'row2');
+    resp.appendChild(el('span', 'lbl', 'responsibility — when you would touch it'));
+    resp.appendChild(document.createTextNode(c.responsibility));
+    card.appendChild(resp);
+
+    card.appendChild(el('div', 'meta',
+      `authored by ${c.author_id} · content_sha ${c.content_sha} · ${c.updated_at}`));
+
+    const chunk = byName[c.symbol === '(module)' ? '' : c.symbol]
+               || byName[c.symbol] || null;
+    if (chunk) {
+      const pre = el('div', 'chunk', chunk.text);
+      card.appendChild(el('div', 'meta', `indexed as ${chunk.chunk_id} · ${chunk.heading_path}`));
+      card.appendChild(pre);
+    } else if (d.indexed_error) {
+      card.appendChild(el('div', 'meta', `not indexed: ${d.indexed_error}`));
+    } else {
+      card.appendChild(el('div', 'meta',
+        'no chunk in the index — re-run: python -m retrieval.index'));
+    }
+    moddetail.appendChild(card);
+  });
+}
+
+document.getElementById('know').addEventListener('click', openSheet);
+document.getElementById('close').addEventListener('click',
+  () => sheet.classList.remove('open'));
+sheet.addEventListener('click', e => {
+  if (e.target === sheet) sheet.classList.remove('open');
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') sheet.classList.remove('open');
+});
 
 // --- trace ---
 // Two sections, in the order the demo tells its story: what is running, then

@@ -467,6 +467,95 @@ def tail_runs(stop: threading.Event) -> None:
 
 # --- memes --------------------------------------------------------------------
 
+# --- what the agent knows about this app --------------------------------------
+#
+# The "what does it know?" panel. It reads the same two layers `search_corpus`
+# reads and shows them side by side, because the join between them is the whole
+# architecture (#5, #57): the GRAPH says the module exists (derived, any scan may
+# replace it), the OVERLAY says what it is for (authored, no scan may touch it),
+# and they meet on `symbol_uid` — never merged into one store.
+#
+# The card text shown here is not a paraphrase of the chunk. It is fetched from
+# Postgres by `symbol_uid`, so it is byte-for-byte the passage `search_corpus`
+# would return for a hit on this module.
+
+def app_modules() -> list[dict[str, Any]]:
+    """Every `app.*` node in the knowledge graph, with its summary card count."""
+    graph = REPO_ROOT / "store" / "knowledge_graph.json"
+    try:
+        data = json.loads(graph.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+
+    from overlay import db as overlay_db  # noqa: PLC0415 — after sys.path setup
+
+    conn = overlay_db.connect()
+    try:
+        nodes = [
+            n for n in (data.get("nodes") or [])
+            if isinstance(n, dict) and str(n.get("id", "")).split(".")[0] == "app"
+        ]
+        out = []
+        for node in sorted(nodes, key=lambda n: str(n.get("id"))):
+            uid = f"Module:{node['id']}"
+            cards = overlay_db.query_node_summaries(conn, symbol_uids=[uid])
+            out.append({
+                "id": node["id"],
+                "uid": uid,
+                "path": node.get("path"),
+                "symbols": node.get("symbols") or [],
+                "cards": len(cards),
+            })
+        return out
+    finally:
+        conn.close()
+
+
+def module_detail(uid: str) -> dict[str, Any]:
+    """The authored cards for one module, plus the chunks they became."""
+    from overlay import db as overlay_db  # noqa: PLC0415
+
+    conn = overlay_db.connect()
+    try:
+        cards = overlay_db.query_node_summaries(conn, symbol_uids=[uid])
+    finally:
+        conn.close()
+
+    chunks: list[dict[str, Any]] = []
+    indexed_error = None
+    try:
+        import psycopg  # noqa: PLC0415
+
+        from retrieval.store import TABLE, dsn  # type: ignore
+        with psycopg.connect(dsn(), connect_timeout=4) as conn2, conn2.cursor() as cur:
+            cur.execute(
+                f"SELECT chunk_id, kind, symbol, heading_path, text FROM {TABLE}"
+                " WHERE symbol_uid = %s ORDER BY symbol NULLS FIRST", (uid,))
+            chunks = [
+                {"chunk_id": r[0], "kind": r[1], "symbol": r[2],
+                 "heading_path": r[3], "text": r[4]}
+                for r in cur.fetchall()
+            ]
+    except Exception as exc:  # noqa: BLE001
+        indexed_error = f"{type(exc).__name__} — is Postgres up?"
+
+    return {
+        "uid": uid,
+        "cards": [
+            {"symbol": c["symbol"] or "(module)",
+             "summary": c["summary"],
+             "responsibility": c["responsibility"],
+             "signature": c["signature"],
+             "author_id": c["author_id"],
+             "content_sha": (c["content_sha"] or "")[:12],
+             "updated_at": c["updated_at"]}
+            for c in cards
+        ],
+        "chunks": chunks,
+        "indexed_error": indexed_error,
+    }
+
+
 def list_memes() -> list[str]:
     if not MEMES_DIR.is_dir():
         return []
@@ -525,6 +614,26 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError:
                         since = 0
             self._json({"events": LOG.since(since)})
+            return
+
+        if path == "/api/modules":
+            self._json({"modules": app_modules()})
+            return
+
+        if path == "/api/module":
+            uid = ""
+            for part in query.split("&"):
+                if part.startswith("uid="):
+                    uid = unquote(part[4:])
+            if not uid.startswith("Module:app"):
+                # The panel is about this app. Anything else is a request for a
+                # module it has no business rendering, so it is refused rather
+                # than served — the endpoint reads the overlay, and the overlay
+                # holds rows this page is not the right surface for.
+                self._json({"error": "out_of_scope",
+                            "detail": "this panel serves app.* modules only"}, 400)
+                return
+            self._json(module_detail(uid))
             return
 
         if path == "/api/meme":
