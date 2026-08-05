@@ -21,13 +21,13 @@ shows up on the next reload — no build step, no restart.
 from __future__ import annotations
 
 # The big round button. The demo's "change the colour" request lands here.
-BUTTON_COLOR = "#e23c3c"
+BUTTON_COLOR = "#16a34a"
 
 # Its lit edge and its shadow. Derived by hand rather than computed so that a
 # request to change the button's colour touches one obvious value and the page
 # still looks deliberate afterwards.
-BUTTON_HIGHLIGHT = "#ff5252"
-BUTTON_SHADOW = "#8f1d1d"
+BUTTON_HIGHLIGHT = "#22c55e"
+BUTTON_SHADOW = "#166534"
 
 # What the caption under the button says.
 BUTTON_CAPTION = "click to change the meme"

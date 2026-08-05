@@ -98,11 +98,37 @@
   .sheet-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
   .sheet-head p { margin: 0; font-size: 12px; color: var(--dim); }
   .close {
-    margin-left: auto; width: auto; height: auto; border-radius: 8px;
+    width: auto; height: auto; border-radius: 8px;
     padding: 6px 11px; background: transparent; border: 1px solid var(--line);
     color: var(--dim); font: inherit; font-size: 12px; box-shadow: none;
   }
   .close:active { transform: none; box-shadow: none; }
+
+  .know-stack { display: flex; flex-direction: column; gap: 8px; }
+  .tabs { margin-left: auto; display: flex; gap: 6px; }
+  .tab {
+    width: auto; height: auto; border-radius: 7px; padding: 6px 13px;
+    background: transparent; border: 1px solid var(--line);
+    color: var(--dim); font: inherit; font-size: 12px; box-shadow: none;
+  }
+  .tab:hover { filter: none; color: var(--text); }
+  .tab:active { transform: none; box-shadow: none; }
+  .tab.sel { border-color: var(--c-agent); color: var(--c-agent); background: #16222f; }
+
+  /* Decision records. `orphan` is a state worth seeing, not an error to hide:
+     the component almost certainly moved, which is the signal (§6). */
+  .orphan-tag {
+    display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px;
+    font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--c-gate); background: #2a1622; border: 1px solid var(--c-gate);
+  }
+  .status-tag {
+    display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 10px;
+    letter-spacing: .06em; text-transform: uppercase; background: #1b202b;
+    color: var(--c-boot);
+  }
+  .status-tag.proposed { color: var(--c-user); }
+  .status-tag.superseded, .status-tag.rejected { color: var(--c-note); }
 
   .sheet-body { display: flex; min-height: 0; flex: 1 1 auto; }
   .mod-list {
@@ -279,7 +305,10 @@
       <button id="btn" aria-label="change the meme"></button>
       <div class="caption">{{BUTTON_CAPTION}}</div>
     </div>
-    <button class="know-btn" id="know">what does the agent know about this app?</button>
+    <div class="know-stack">
+      <button class="know-btn" id="know">what does the agent know about this app?</button>
+      <button class="know-btn" id="decisions">what has been decided?</button>
+    </div>
   </div>
 </section>
 
@@ -287,8 +316,12 @@
   <div class="sheet-inner">
     <div class="sheet-head">
       <div>
-        <h2>app/ — as the agent sees it</h2>
-        <p>graph nodes (derived) joined to their authored summary cards on <code>symbol_uid</code></p>
+        <h2 id="sheet-title">app/ — as the agent sees it</h2>
+        <p id="sheet-sub">graph nodes (derived) joined to their authored summary cards on <code>symbol_uid</code></p>
+      </div>
+      <div class="tabs">
+        <button class="tab sel" id="tab-modules">modules</button>
+        <button class="tab" id="tab-decisions">decisions</button>
       </div>
       <button class="close" id="close">close</button>
     </div>
@@ -493,7 +526,115 @@ async function showModule(m) {
   });
 }
 
-document.getElementById('know').addEventListener('click', openSheet);
+// --- the decisions browser ---
+// The authored half. Structure is derived and any scan replaces it; decisions
+// are authored and no scan may touch them — this is the visible proof the repo
+// accumulates knowledge instead of resetting.
+async function openDecisions() {
+  modlist.replaceChildren(el('div', 'note', 'loading…'));
+  moddetail.replaceChildren();
+  const {groups} = await (await fetch('/api/decisions', {cache: 'no-store'})).json();
+  modlist.replaceChildren();
+  if (!groups.length) {
+    modlist.appendChild(el('div', 'note', 'No team-visible decisions recorded yet.'));
+    return;
+  }
+  groups.forEach((g, i) => {
+    const b = el('button', 'mod');
+    const code = el('code', null, g.label);
+    b.appendChild(code);
+    if (g.orphan) b.appendChild(el('span', 'orphan-tag', 'orphan'));
+    b.appendChild(el('small', null,
+      `${g.count} decision${g.count === 1 ? '' : 's'}` +
+      (g.orphan ? ' · component not in the graph' : '')));
+    b.onclick = () => {
+      [...modlist.children].forEach(c => c.classList.remove('sel'));
+      b.classList.add('sel');
+      showDecisions(g);
+    };
+    modlist.appendChild(b);
+    if (i === 0) b.click();
+  });
+}
+
+async function showDecisions(g) {
+  moddetail.replaceChildren(el('div', 'note', 'loading…'));
+  const d = await (await fetch('/api/decision?uid=' + encodeURIComponent(g.uid),
+                               {cache: 'no-store'})).json();
+  moddetail.replaceChildren();
+  moddetail.appendChild(el('h3', null, g.label));
+  moddetail.appendChild(el('div', 'sub', g.uid || 'applies repo-wide'));
+
+  if (g.orphan) {
+    moddetail.appendChild(el('div', 'note',
+      'This component is not in the knowledge graph, so these decisions are ' +
+      'orphaned: nothing looks them up when a change is planned. Surfaced, not ' +
+      'deleted — the component most likely moved, and that is the signal worth ' +
+      'having.'));
+  }
+
+  d.records.forEach(r => {
+    const card = el('div', 'card');
+    const h = el('h4');
+    h.appendChild(document.createTextNode(r.decision_id + '  '));
+    h.appendChild(el('span', 'status-tag ' + (r.status || ''), r.status || '?'));
+    card.appendChild(h);
+
+    const dec = el('div', 'row2');
+    dec.appendChild(el('span', 'lbl', 'decision'));
+    dec.appendChild(document.createTextNode(r.decision || ''));
+    card.appendChild(dec);
+
+    if (r.rationale) {
+      const rat = el('div', 'row2');
+      rat.appendChild(el('span', 'lbl', 'rationale — why'));
+      rat.appendChild(document.createTextNode(r.rationale));
+      card.appendChild(rat);
+    }
+    if (r.rejected) {
+      const rej = el('div', 'row2');
+      rej.appendChild(el('span', 'lbl', 'rejected alternative'));
+      rej.appendChild(document.createTextNode(r.rejected));
+      card.appendChild(rej);
+    }
+    card.appendChild(el('div', 'meta', `authored by ${r.author_id} · ${r.ts}`));
+    moddetail.appendChild(card);
+  });
+
+  moddetail.appendChild(el('div', 'note',
+    'This panel holds no session, so it reads as an anonymous user: the query ' +
+    'asks for team-visible rows only. Private decisions are never fetched — ' +
+    'not fetched and then hidden by the page.'));
+}
+
+// --- tabs ---
+const TABS = {
+  modules: {
+    title: 'app/ — as the agent sees it',
+    sub: 'graph nodes (derived) joined to their authored summary cards on symbol_uid',
+    open: openSheet,
+  },
+  decisions: {
+    title: 'decisions on file',
+    sub: 'authored knowledge — no scan may overwrite it (team-visible only)',
+    open: openDecisions,
+  },
+};
+
+function showTab(name) {
+  const t = TABS[name];
+  document.getElementById('sheet-title').textContent = t.title;
+  document.getElementById('sheet-sub').textContent = t.sub;
+  document.getElementById('tab-modules').classList.toggle('sel', name === 'modules');
+  document.getElementById('tab-decisions').classList.toggle('sel', name === 'decisions');
+  sheet.classList.add('open');
+  t.open();
+}
+
+document.getElementById('know').addEventListener('click', () => showTab('modules'));
+document.getElementById('decisions').addEventListener('click', () => showTab('decisions'));
+document.getElementById('tab-modules').addEventListener('click', () => showTab('modules'));
+document.getElementById('tab-decisions').addEventListener('click', () => showTab('decisions'));
 document.getElementById('close').addEventListener('click',
   () => sheet.classList.remove('open'));
 sheet.addEventListener('click', e => {

@@ -665,6 +665,105 @@ def module_detail(uid: str) -> dict[str, Any]:
     }
 
 
+# --- the authored layer: decisions ---------------------------------------------
+#
+# The other half of the knowledge panel, and the half the project exists for:
+# structure is derived and any scan replaces it, decisions are AUTHORED and no
+# scan may touch them (§6). This browser is the visible proof that the repo
+# accumulates knowledge instead of resetting.
+#
+# **Visibility is a WHERE clause here too** (#24). The app holds no session, so
+# it reads as an anonymous user — `query_decisions(user_id=None)` emits
+# `visibility = 'team'` in the SQL. Private decisions are never fetched, rather
+# than fetched and filtered out in Python, because the two look identical until
+# the filter has a bug.
+
+def _graph_ids() -> set[str]:
+    """Every id and path in the knowledge graph, for the orphan check."""
+    try:
+        data = json.loads((REPO_ROOT / "store" / "knowledge_graph.json")
+                          .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    ids: set[str] = set()
+    for node in data.get("nodes") or []:
+        if isinstance(node, dict):
+            ids.add(str(node.get("id")))
+            if node.get("path"):
+                ids.add(str(node["path"]))
+    return ids
+
+
+def decision_groups() -> list[dict[str, Any]]:
+    """Components carrying decisions, most-decided first.
+
+    Each group reports whether its `symbol_uid` still resolves to a graph node.
+    An orphan is surfaced, never hidden and never deleted (§6) — the component
+    most likely moved, which is the signal worth having, and a decision recorded
+    against a component that never existed is inert in a way nothing else
+    reveals.
+    """
+    from overlay import db as overlay_db  # noqa: PLC0415
+
+    conn = overlay_db.connect()
+    try:
+        rows = overlay_db.query_decisions(conn, user_id=None)
+    finally:
+        conn.close()
+
+    known = _graph_ids()
+    groups: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        uid = row.get("symbol_uid") or ""
+        key = uid or "(repo-wide)"
+        bare = uid.split(":", 1)[-1] if uid else ""
+        if key not in groups:
+            groups[key] = {
+                "uid": uid,
+                "label": bare or "repo-wide",
+                "count": 0,
+                # A repo-wide decision has no uid to resolve, so it is never an
+                # orphan — it applies everywhere by design.
+                "orphan": bool(uid) and bool(known) and bare not in known,
+            }
+        groups[key]["count"] += 1
+    return sorted(groups.values(),
+                  key=lambda g: (not g["orphan"], -g["count"], g["label"]))
+
+
+def decision_detail(uid: str) -> dict[str, Any]:
+    """The visible decision records for one component (or repo-wide)."""
+    from overlay import db as overlay_db  # noqa: PLC0415
+
+    conn = overlay_db.connect()
+    try:
+        rows = overlay_db.query_decisions(
+            conn, user_id=None,
+            symbol_uids=[uid] if uid else None,
+            include_repo_wide=not uid,
+        )
+    finally:
+        conn.close()
+    if uid:
+        rows = [r for r in rows if (r.get("symbol_uid") or "") == uid]
+    else:
+        rows = [r for r in rows if not r.get("symbol_uid")]
+
+    return {
+        "uid": uid,
+        "records": [
+            {"decision_id": r.get("decision_id"),
+             "decision": r.get("decision"),
+             "rationale": r.get("rationale"),
+             "rejected": r.get("rejected"),
+             "status": r.get("status"),
+             "author_id": r.get("author_id"),
+             "ts": r.get("ts")}
+            for r in rows
+        ],
+    }
+
+
 def list_memes() -> list[str]:
     if not MEMES_DIR.is_dir():
         return []
@@ -743,6 +842,18 @@ class Handler(BaseHTTPRequestHandler):
                             "detail": "this panel serves app.* modules only"}, 400)
                 return
             self._json(module_detail(uid))
+            return
+
+        if path == "/api/decisions":
+            self._json({"groups": decision_groups()})
+            return
+
+        if path == "/api/decision":
+            uid = ""
+            for part in query.split("&"):
+                if part.startswith("uid="):
+                    uid = unquote(part[4:])
+            self._json(decision_detail(uid))
             return
 
         if path == "/api/meme":

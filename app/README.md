@@ -64,6 +64,29 @@ module is a hit — not a paraphrase reconstructed by the page.
 Cards are written by `overlay/summarize.py` (author id `summarizer`), not by the
 executor.
 
+## The "what has been decided?" panel
+
+The third button, and the `decisions` tab of the same sheet: every component
+carrying decisions, and the records themselves — decision, rationale, rejected
+alternative, status, author, timestamp.
+
+This is the authored half, and the point of the project: structure is derived and
+any scan replaces it wholesale, decisions are authored and **no scan may touch
+them**. The panel is the visible proof the repo accumulates knowledge instead of
+resetting.
+
+**Orphans are shown, not hidden.** A component whose `symbol_uid` no longer
+resolves to a graph node is tagged `orphan`, with a note that nothing looks those
+decisions up when a change is planned. Surfaced rather than deleted (§6) — the
+component most likely moved, which is the signal worth having. It also catches
+the other case: a decision recorded against a component that never existed
+(`Module:website`), which is inert in a way nothing else reveals.
+
+**Private decisions are never fetched.** The app holds no session, so it reads as
+an anonymous user and `query_decisions(user_id=None)` puts `visibility = 'team'`
+in the SQL. Verified: requesting a private decision's uid directly returns zero
+records. Filtered in the query, never fetched-then-hidden by the page (#24).
+
 ## Where the trace comes from
 
 | source | what it gives | when |
