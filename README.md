@@ -23,7 +23,7 @@ each other, and one engineer's private preference must never surface in another'
 | | |
 |---|---|
 | Homework | HW5 — retrieval layer + evaluation harness *(the classroom calls this one "HW2"; see [`docs/TODO.md`](docs/TODO.md) § HW5)* |
-| Stage | HW1-HW4 closed. HW5 Part 1 (retrieval layer): **done**. Part 2 (retrieval metrics), Part 3 (generation metrics), Part 4 (report): in progress |
+| Stage | HW1-HW4 closed. HW5 Part 1 (retrieval layer) and Part 2 (retrieval metrics): **done**. Part 3 (generation metrics), Part 4 (report): in progress |
 | Tests | 328 passing + 10 online retrieval tests |
 | Course | Coding Assistants as Agentic Systems |
 
@@ -672,9 +672,90 @@ being code-owned rather than a rule asking an agent to remember.
 
 ### Part 2 — Retrieval metrics
 
-*Owner: Alejandro (Phase 14C). Table to be filled in: hit rate@k, precision@k, recall@k, MRR,
-nDCG@k, at k = 3/5/10, with reranking on and off, plus the per-category breakdown and the count
-of excluded empty-golden cases.*
+*Owner: Alejandro (Phase 14C). The five rank-aware metrics — free, reproducible, and run before
+any judged metric so a retrieval bug is caught for nothing.* Harness: `eval/`, driven by
+`python -m eval.run_eval`; scorers in `eval/retrieval_metrics.py`, anchor resolution in
+`eval/loader.py`, the 24-case set in `eval/cases.json`.
+
+**Setup.** The eval set is **24 cases**, reusing Part 1's ten queries as `q01`–`q10` so the prose
+above and the numbers below describe the *same* queries, plus fourteen more spread across **seven
+Session 11 §5 failure categories** (exact-term, acronym, lexical-vs-semantic, near-duplicate,
+why-question, multi-hop, and **out-of-corpus** ×2). Goldens are **content anchors, not chunk ids**
+(a decision's record number, a symbol, a heading), resolved against the live index at load time,
+because ids are `sha1(identity)[:16]` and move on every re-chunk (contract #10). Of the 24,
+**22 are scored, 2 are out-of-corpus** (empty golden — undefined, excluded from the averages and
+counted here separately), and **0 were unresolved**. The index these run over is 1,295 chunks
+(632 component cards, 663 doc sections) — larger than Part 1's 1,200 because it was re-indexed on
+a fresher scan (which now includes `eval/`) and a longer `ARCHITECTURE.md`; the decision records
+are searched as their `ARCHITECTURE.md` §5 table rows either way.
+
+Three scoring conventions, each a specific wrong number avoided (decision #67): an out-of-corpus
+case scores **`None` (undefined), never 0** — punishing correct abstention would drag the mean
+down; precision@k's denominator is **what was returned** (`min(k, len)`), not a flat `k`; and every
+metric reads **`Hit.rank`**, so no lost-in-the-middle repack can reach MRR/nDCG (decision #59).
+
+**Reranking ON** (retrieve 30/arm → RRF → rerank to k):
+
+| metric | k=3 | k=5 | k=10 |
+|---|---|---|---|
+| hit rate | 0.545 | 0.682 | 0.818 |
+| precision | 0.197 | 0.173 | 0.132 |
+| recall | 0.369 | 0.511 | 0.699 |
+| MRR | 0.470 | 0.504 | 0.522 |
+| nDCG | 0.368 | 0.437 | 0.508 |
+
+**Reranking OFF** (RRF fused order, no rerank):
+
+| metric | k=3 | k=5 | k=10 |
+|---|---|---|---|
+| hit rate | 0.545 | 0.636 | 0.682 |
+| precision | 0.197 | 0.136 | 0.091 |
+| recall | 0.386 | 0.438 | 0.500 |
+| MRR | 0.485 | 0.505 | 0.512 |
+| nDCG | 0.373 | 0.397 | 0.424 |
+
+**The precision/recall tension is the finding, not a nuisance.** As k rises from 3 to 10, recall
+climbs hard (0.37 → 0.70 reranked) and precision falls just as steadily (0.197 → 0.132). They move
+in opposite directions *by construction*: most cases have one or two golden chunks, so widening the
+cut can only find more of them (recall up) while diluting what was returned (precision down). The
+low absolute precision is not a bug — it is the arithmetic ceiling of `golden/k` on a set with
+sparse goldens, and it is the reason precision@k alone would be a misleading headline here.
+
+**What reranking actually bought — measured, and it agrees with Part 1 with one sharp caveat.**
+Part 1's qualitative read was "reranking is the most reliable single improvement, and it is not
+free or universal." The numbers confirm both halves. Net it is a clear win at depth: at k=10 it
+lifts hit rate +0.136 (0.68 → 0.82), recall +0.199 (0.50 → 0.70) and nDCG +0.084; at k=5 every
+metric improves. **But at k=3 it is neutral-to-slightly-negative** — hit rate is identical (0.545)
+and MRR *drops* (0.485 → 0.470). That dip is the quantitative shadow of the one query Part 1 saw
+the reranker regress (query 6, where it demoted a rank-1 hit): reranking helps most by pulling
+golden chunks *into* a wider cut, and occasionally costs a place right at the top. So the honest
+summary matches the prose — reliable, not universal — and now with a number on the "not universal."
+
+**Per category (k=5).** An average over a mixed set hides which category the retriever is bad at,
+which is the whole reason the cases are tagged. Reranking-ON, then OFF in parentheses:
+
+| category | hit rate | precision | recall | MRR | nDCG |
+|---|---|---|---|---|---|
+| exact-term | 1.000 (1.000) | 0.250 (0.200) | 0.625 (0.500) | 1.000 (1.000) | 0.672 (0.613) |
+| why-question | 0.833 (0.833) | 0.200 (0.200) | 0.750 (0.750) | 0.708 (0.722) | 0.661 (0.672) |
+| acronym | 0.667 (0.667) | 0.133 (0.133) | 0.667 (0.667) | 0.333 (0.178) | 0.421 (0.296) |
+| multi-hop | 0.667 (0.667) | 0.200 (0.133) | 0.500 (0.333) | 0.417 (0.667) | 0.371 (0.409) |
+| near-duplicate | 0.500 (0.500) | 0.200 (0.100) | 0.125 (0.062) | 0.167 (0.125) | 0.158 (0.073) |
+| lexical-vs-semantic | 0.250 (0.000) | 0.050 (0.000) | 0.125 (0.000) | 0.062 (0.000) | 0.066 (0.000) |
+
+Two category findings stand out, both consistent with Part 1. **`exact-term` is the strongest
+category** (hit 1.0, MRR 1.0) — the component card carries the identifier as its title, so a bare
+`impact_scope` or `search_corpus` matches almost directly, exactly the mechanism Part 1's finding #1
+described. **`lexical-vs-semantic` is the weakest**, and it is where reranking earns its keep most
+plainly: it lifts that category from **0.000 to 0.250 hit rate** — with reranking off, none of those
+paraphrased queries put a golden chunk in the top 5 at all. `near-duplicate` stays poor at every
+setting (recall 0.06–0.13): nothing in the pipeline deduplicates by source document, so a section
+split into near-copies crowds the cut — the MMR-shaped limitation Part 1 named and did not fix.
+
+**Excluded, reported separately:** 2 out-of-corpus cases (`q10_kubernetes_oob`, `q23_lambda_oob`) —
+their metrics are undefined, not zero, and they are omitted from every average above. Retrieval
+still returns confident junk for them (Part 1, finding #5); the point of scoring them undefined is
+that a system which correctly *cannot* answer should not be graded as if it retrieved badly.
 
 ### Part 3 — Generation metrics
 

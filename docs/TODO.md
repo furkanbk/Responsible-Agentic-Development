@@ -1385,39 +1385,40 @@ retrieval bug caught here saves the price of every judged metric downstream.
 
 ### T14.10 — The eval set
 
-- [ ] `eval/cases.json` — ≥20 cases: `query`, `golden_answer`, `category`, `anchors`. Realistic
+- [x] `eval/cases.json` — 24 cases: `query`, `golden_answer`, `category`, `anchors`. Realistic
       beats synthetic: 20 questions someone would actually ask beat 1000 generated ones.
-- [ ] **Content anchors, not chunk ids** — ids move on every re-chunk, and a golden set that goes
-      stale silently is worse than none. Resolved to ids at load via `Anchor` (contract #10).
-- [ ] Spread across ≥5 Session 11 §5 failure categories, **one of which is out-of-corpus** — a
-      question the corpus genuinely cannot answer. Its golden set is empty; that is correct, not
-      missing data.
-- [ ] Reuse T14.8's ≥8 qualitative queries as cases, so Parts 1 and 2 put prose and numbers on
-      the same queries rather than on two unrelated sets.
+- [x] **Content anchors, not chunk ids** — ids move on every re-chunk, and a golden set that goes
+      stale silently is worse than none. Resolved to ids at load via `Anchor` (contract #10) in
+      `eval/loader.py` (component→uid, decision→record number, doc→heading).
+- [x] Spread across **7** Session 11 §5 failure categories (exact-term, acronym,
+      lexical-vs-semantic, near-duplicate, why-question, multi-hop, **out-of-corpus** ×2). The
+      out-of-corpus golden set is empty; that is correct, not missing data.
+- [x] Reuse T14.8's 10 qualitative queries as cases q01–q10, so Parts 1 and 2 put prose and
+      numbers on the same queries rather than on two unrelated sets.
 
 ### T14.11 — Rank-aware retrieval metrics
 
-- [ ] `eval/retrieval_metrics.py` — hit rate@k, precision@k, recall@k, MRR, nDCG@k. Plain Python
-      or sklearn helpers; no evaluation library ships this family, and DeepEval's
-      `ContextualPrecisionMetric`/`ContextualRecallMetric` are *judged* metrics measuring
-      something else — do not substitute them.
-- [ ] Score the **retriever's** order (#59). `search()` already returns it; do not call
-      `pack_for_llm` anywhere in the harness.
-- [ ] Empty-golden cases are **undefined, not zero** — excluded from averages and counted
-      separately in the report. `EvalCase.out_of_corpus` already identifies them.
-- [ ] Run at more than one k (3/5/10). Precision@k and recall@k move in opposite directions, and
-      that tension **is** the finding — measured, not asserted.
+- [x] `eval/retrieval_metrics.py` — hit rate@k, precision@k, recall@k, MRR, nDCG@k. Plain Python,
+      no evaluation library (none ships this family); DeepEval's
+      `ContextualPrecisionMetric`/`ContextualRecallMetric` are *judged* metrics — not substituted.
+- [x] Score the **retriever's** order (#59). `ranked_ids_from_hits` sorts on `Hit.rank`;
+      `pack_for_llm` is never called in the harness.
+- [x] Empty-golden cases are **undefined (`None`), not zero** — excluded from averages and counted
+      separately; a third `unresolved` status (stale golden) is treated the same way (#67).
+- [x] Run at more than one k (3/5/10). Precision@k and recall@k move in opposite directions, and
+      that tension **is** the finding — the sweep measures it.
 
 ### T14.12 — The k-sweep and the rerank table
 
-- [ ] `eval/run_eval.py` — the full matrix, rerank ∈ {on, off} × k ∈ {3,5,10}, with a
-      **per-category breakdown**: an average over a mixed set hides which failure category the
-      retriever is actually bad at, which is the whole reason the cases are tagged.
-- [ ] Run the full set both ways through the `rerank: bool` seam on `search()`. Nothing in class
-      wired an eval harness over a reranked pipeline — this is the table that justifies the
-      reranker, and Part 1 measured its cost at ~4.0s uncached, so the table has to earn it.
-- [ ] `tests/test_retrieval_metrics.py` — the scorers over hand-built `Hit`s. Offline: contract
-      #10 is the whole input surface, so this needs no Postgres and no API key.
+- [x] `eval/run_eval.py` — the full matrix, rerank ∈ {on, off} × k ∈ {3,5,10}, with a
+      **per-category breakdown** (`format_report`). One search per (query, rerank) at `K_MAX`,
+      truncated for lower k — exact for this band reranker (#65), halves the rerank calls.
+- [x] Runs the full set both ways through the `rerank: bool` seam on `search()`. _Executing it for
+      the README numbers needs a live index (Docker pgvector + `OPENROUTER_API_KEY`) — see T14.12b._
+- [x] `tests/test_retrieval_metrics.py` — the scorers over hand-built `Hit`s, plus anchor
+      resolution, the real eval set's shape, and the matrix over a fake retriever. Offline
+      (16 pass, 1 online skips); one `@pytest.mark.online` test runs the whole harness over a live
+      index. Contract #10 is the whole input surface, so the offline body needs no Postgres/key.
 
 ### T14.12b — README, Part 2 (Alejandro)
 
@@ -1426,23 +1427,26 @@ person who ran the numbers is the person who can say what they mean, and a singl
 up someone else's table is how a report ends up describing what was expected instead of what
 happened.
 
-- [ ] Fill in README § "Part 2 — Retrieval metrics", replacing the placeholder: the five metrics
+- [x] Fill in README § "Part 2 — Retrieval metrics", replacing the placeholder: the five metrics
       at k = 3/5/10, reranking on and off, the per-category breakdown, and the count of excluded
-      empty-golden cases reported separately.
-- [ ] State the precision/recall tension explicitly — it moves in opposite directions as k rises
-      and that tension **is** the finding.
-- [ ] Say whether the numbers agree with Part 1's qualitative table. Part 1 found BM25 to be the
-      weaker arm here, RRF to regress 2 of 10, and reranking to net +2 at ~60× the latency —
-      if the metrics disagree with any of that, **the disagreement is the result**, and it is
-      more valuable than a table that merely confirms the prose.
+      empty-golden cases (2) reported separately. Numbers from a live run over a 1,295-chunk index.
+- [x] State the precision/recall tension explicitly — recall 0.37→0.70 vs precision 0.197→0.132 as
+      k rises 3→10; the tension **is** the finding (sparse goldens cap precision at `golden/k`).
+- [x] Says whether the numbers agree with Part 1. They **agree**: reranking nets a clear win at
+      k≥5 (hit@10 +0.136, recall@10 +0.199) yet is neutral-to-negative at k=3 (MRR 0.485→0.470) —
+      the quantitative shadow of Part 1's one regressed query. exact-term strongest, near-duplicate
+      and lexical-vs-semantic weakest (the latter 0.000→0.250 hit rate is where rerank earns its
+      keep). The BM25-weaker-arm / RRF-regressed-2 claims are Part 1 *arm* ablations, not
+      contradicted by this rerank-on/off seam and not re-measured here.
 
 ### T14.13 — Planner seed via retrieval
 
-- [ ] `agents/planner.py::_propose_seed_and_steps` resolves its seed through `search_corpus`,
-      closing the open HW4 item where the model is asked to name a component with no node list in
-      front of it and returns an empty seed. The second filed planner bug (`_brace_slice` using
-      `rfind("}")` rather than the matching brace) is **separate** — `overlay/summarize.py` has a
-      correct depth-scan to copy, but land it as its own change, not folded in.
+- [x] `agents/planner.py::_propose_seed_and_steps` resolves its seed through `search_corpus`
+      (decision #66): retrieved component cards are shown to the model as a candidate list, and if
+      the model still names no seed the top hit is used, closing the open HW4 item. Degrades to the
+      original blind prompt when the index is unavailable (lazy import, offline suite unaffected).
+      The second filed planner bug (`_brace_slice` using `rfind("}")` rather than the matching
+      brace) is **left separate** — not folded in, per the task.
 
 **Depends on:** Phase 14B (a live retriever to score). **Not on Dias.**
 
