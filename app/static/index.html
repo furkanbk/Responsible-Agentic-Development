@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Billion Dollar Startup — Funny Memes</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --panel: #12151c;
+    --line: #232936;
+    --text: #e8ecf3;
+    --dim: #8b95a7;
+    --red: #e23c3c;
+    --red-hot: #ff5252;
+    /* One hue per actor in the trace. Kept few on purpose: a panel with ten
+       colours is a panel with none. */
+    --c-boot:   #6ee7a8;
+    --c-user:   #ffd166;
+    --c-agent:  #6cb8ff;
+    --c-tool:   #b48cff;
+    --c-plan:   #4fd6c4;
+    --c-exec:   #ff9f6e;
+    --c-gate:   #ff7ab6;
+    --c-answer: #9ae6b4;
+    --c-note:   #7c869b;
+    --c-error:  #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+  }
+
+  /* --- top two thirds: the product --- */
+  .stage {
+    flex: 2 1 0; min-height: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; padding: 18px 20px; text-align: center;
+  }
+  .brand { font-size: 13px; letter-spacing: .22em; text-transform: uppercase; color: var(--dim); }
+  .brand b { color: var(--red-hot); font-weight: 700; }
+
+  .meme-frame {
+    flex: 1 1 0; min-height: 0; width: 100%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .meme-frame img {
+    max-height: 100%; max-width: min(100%, 780px);
+    object-fit: contain; border-radius: 12px;
+    border: 1px solid var(--line); background: #000;
+  }
+  .empty {
+    color: var(--dim); font-size: 14px; border: 1px dashed var(--line);
+    border-radius: 12px; padding: 34px 40px;
+  }
+  .empty code { color: var(--text); }
+
+  .btn-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  button {
+    width: 92px; height: 92px; border-radius: 50%; border: none; cursor: pointer;
+    background: radial-gradient(circle at 34% 30%, var(--red-hot), var(--red) 62%, #8f1d1d);
+    box-shadow: 0 8px 0 #7a1717, 0 14px 26px rgba(226,60,60,.35);
+    transition: transform .07s ease, box-shadow .07s ease;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:active { transform: translateY(6px); box-shadow: 0 2px 0 #7a1717, 0 6px 14px rgba(226,60,60,.3); }
+  .caption { font-size: 13px; color: var(--dim); }
+
+  /* --- bottom third: the trace --- */
+  .logs {
+    flex: 1 1 0; min-height: 0;
+    background: var(--panel); border-top: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+    font-size: 12.5px;
+  }
+  .logs header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 7px 14px; border-bottom: 1px solid var(--line);
+    color: var(--dim); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c-boot); }
+  .dot.bad { background: var(--c-error); }
+  .feed { flex: 1 1 0; overflow-y: auto; padding: 8px 14px 14px; }
+
+  .sec {
+    margin: 10px 0 4px; padding-top: 8px; border-top: 1px dashed var(--line);
+    color: var(--dim); font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
+  }
+  .sec:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+
+  .row { display: flex; gap: 9px; padding: 1.5px 0; align-items: baseline; }
+  .ts { color: #4d5666; flex: 0 0 auto; }
+  .tag {
+    flex: 0 0 62px; text-align: right; text-transform: uppercase;
+    font-size: 10.5px; letter-spacing: .06em; opacity: .95;
+  }
+  .msg { flex: 1 1 auto; word-break: break-word; }
+  .detail { color: var(--dim); }
+  .detail::before { content: " → "; color: #3f4757; }
+
+  .k-boot   .tag, .k-boot   .msg { color: var(--c-boot); }
+  .k-user   .tag, .k-user   .msg { color: var(--c-user); }
+  .k-user   .msg { font-weight: 600; }
+  .k-agent  .tag, .k-agent  .msg { color: var(--c-agent); }
+  .k-tool   .tag, .k-tool   .msg { color: var(--c-tool); }
+  .k-plan   .tag, .k-plan   .msg { color: var(--c-plan); }
+  .k-exec   .tag, .k-exec   .msg { color: var(--c-exec); }
+  .k-gate   .tag, .k-gate   .msg { color: var(--c-gate); }
+  .k-answer .tag, .k-answer .msg { color: var(--c-answer); }
+  .k-note   .tag, .k-note   .msg { color: var(--c-note); }
+  .k-error  .tag, .k-error  .msg { color: var(--c-error); }
+</style>
+</head>
+<body>
+
+<section class="stage">
+  <div class="brand">Billion&nbsp;Dollar&nbsp;<b>Startup</b> · funny memes as a service</div>
+  <div class="meme-frame" id="frame">
+    <div class="empty">no memes yet — drop images into <code>app/memes/</code></div>
+  </div>
+  <div class="btn-wrap">
+    <button id="btn" aria-label="change the meme"></button>
+    <div class="caption">click to change the meme</div>
+  </div>
+</section>
+
+<section class="logs">
+  <header>
+    <span class="dot" id="dot"></span>
+    <span>system trace</span>
+    <span style="flex:1"></span>
+    <span id="counter"></span>
+  </header>
+  <div class="feed" id="feed"></div>
+</section>
+
+<script>
+const feed = document.getElementById('feed');
+const frame = document.getElementById('frame');
+const btn = document.getElementById('btn');
+const dot = document.getElementById('dot');
+const counter = document.getElementById('counter');
+
+// --- memes ---
+async function nextMeme() {
+  const res = await fetch('/api/meme', {cache: 'no-store'});
+  if (!res.ok) {
+    frame.innerHTML = '<div class="empty">no memes yet — drop images into <code>app/memes/</code></div>';
+    return;
+  }
+  const data = await res.json();
+  const img = new Image();
+  img.alt = data.name;
+  img.src = '/memes/' + encodeURIComponent(data.name) + '?t=' + Date.now();
+  img.onload = () => { frame.replaceChildren(img); };
+  counter.textContent = data.total + ' memes';
+}
+btn.addEventListener('click', nextMeme);
+nextMeme();
+
+// --- trace ---
+// Two sections, in the order the demo tells its story: what is running, then
+// what happened when somebody typed. `section` comes from the server so the
+// split is not re-derived here.
+let since = 0;
+let currentSection = null;
+const SECTION_TITLE = {boot: 'infrastructure', chat: 'telegram interactions'};
+
+function render(ev) {
+  if (ev.section !== currentSection) {
+    currentSection = ev.section;
+    const h = document.createElement('div');
+    h.className = 'sec';
+    h.textContent = SECTION_TITLE[ev.section] || ev.section;
+    feed.appendChild(h);
+  }
+  const row = document.createElement('div');
+  row.className = 'row k-' + ev.kind;
+  row.innerHTML =
+    '<span class="ts"></span><span class="tag"></span><span class="msg"></span>';
+  row.children[0].textContent = ev.ts;
+  row.children[1].textContent = ev.kind;
+  row.children[2].textContent = ev.text;
+  if (ev.detail) {
+    const d = document.createElement('span');
+    d.className = 'detail';
+    d.textContent = ev.detail;
+    row.children[2].appendChild(d);
+  }
+  feed.appendChild(row);
+  while (feed.children.length > 500) feed.removeChild(feed.firstChild);
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/logs?since=' + since, {cache: 'no-store'});
+    const {events} = await res.json();
+    const stuck = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
+    for (const ev of events) { render(ev); since = ev.seq; }
+    if (events.length && stuck) feed.scrollTop = feed.scrollHeight;
+    if (events.some(e => e.kind === 'error')) dot.classList.add('bad');
+  } catch (_) { /* the page outlives a blip in the server */ }
+  setTimeout(poll, 700);
+}
+poll();
+</script>
+</body>
+</html>
