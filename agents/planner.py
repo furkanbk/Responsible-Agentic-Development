@@ -212,6 +212,41 @@ _PROPOSE_INSTRUCTION = (
 )
 
 
+def _retrieve_seed_candidates(request: str, *, k: int = 5) -> list[str]:
+    """Component seeds the corpus surfaces for this request, best first.
+
+    This is the T14.13 fix for the HW4-filed bug: the model was asked to name a
+    component with **no node list in front of it**, and the live cheap model
+    returned an empty seed, so `run_planner` failed on a request it should have
+    planned. Retrieval closes that gap — `search_corpus(source="components")`
+    returns the module/symbol cards ranked by relevance, and their `symbol_uid`s
+    are the candidate seeds. The model then only has to *pick* from a
+    pre-narrowed list (the graph is the router, #27), and if it still names
+    nothing the top candidate is used rather than failing the run.
+
+    Degrades to `[]` when the index is unavailable (no Postgres, no `psycopg`) or
+    empty, so the planner falls back to the pre-existing blind prompt and every
+    offline test keeps passing. Imported lazily so `agents.planner` does not take
+    a hard `psycopg` dependency at import time.
+    """
+    try:
+        from tools.retrieval_tools import search_corpus
+    except Exception:  # noqa: BLE001 — a missing retrieval layer is a fallback, not a fault
+        return []
+    result = search_corpus(request, k=k, source="components")
+    if not isinstance(result, dict) or result.get("error"):
+        return []
+    seeds: list[str] = []
+    for row in result.get("results", []):
+        uid = row.get("symbol_uid")
+        if not uid:
+            continue
+        dotted = uid.split(":", 1)[-1]          # "Module:tools.decisions" -> "tools.decisions"
+        if dotted and dotted not in seeds:
+            seeds.append(dotted)
+    return seeds
+
+
 def _propose_seed_and_steps(
     request: str, *, model: str
 ) -> tuple[str, list[dict], Optional[AgentResult]]:
@@ -220,9 +255,25 @@ def _propose_seed_and_steps(
     Returns `(seed, steps, None)` on success, or `("", [], AgentResult.failed)`
     when the model output cannot be used — a truncated or unparseable proposal
     is a fault the planner surfaces, never a guess it papers over.
+
+    The seed is resolved *through retrieval* (T14.13): candidate components are
+    retrieved from the corpus and shown to the model, and if the model still names
+    no seed the top-ranked candidate is used, so a retrievable request no longer
+    fails on an empty seed the way it did before.
     """
+    candidates = _retrieve_seed_candidates(request)
+    if candidates:
+        listing = "\n".join(f"  - {c}" for c in candidates)
+        instruction = (
+            f"{_PROPOSE_INSTRUCTION}\n\n"
+            "A search of the codebase surfaced these components, most relevant "
+            f"first — prefer the one that best fits the request:\n{listing}"
+        )
+    else:
+        instruction = _PROPOSE_INSTRUCTION
+
     result = call(
-        f"{_PROPOSE_INSTRUCTION}\n\nRequest:\n{request}",
+        f"{instruction}\n\nRequest:\n{request}",
         system=PLANNER_SYSTEM, model=model, max_output_tokens=400,
     )
     if getattr(result, "truncated", False):
@@ -236,10 +287,16 @@ def _propose_seed_and_steps(
             agent="planner")
 
     seed = str(data.get("seed") or "").strip()
+    steps = _clean_steps(data.get("steps"))
+    if not seed and candidates:
+        # Retrieval found components but the model named none: use the top hit
+        # rather than failing a request the corpus can clearly place. This is the
+        # exact case the HW4 bug filed against this function.
+        seed = candidates[0]
     if not seed:
         return "", [], AgentResult.failed(
             "the model named no seed component", agent="planner")
-    return seed, _clean_steps(data.get("steps")), None
+    return seed, steps, None
 
 
 def _parse_json_object(text: str) -> Optional[dict]:

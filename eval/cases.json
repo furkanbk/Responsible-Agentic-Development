@@ -1,0 +1,227 @@
+[
+  {
+    "case_id": "q01_impact_scope",
+    "query": "impact_scope",
+    "category": "exact-term",
+    "golden_answer": "impact_scope is the ambient write scope read from the session: the set of symbol_uids a run is allowed to write to. An empty impact set denies every write rather than permitting all.",
+    "anchors": [
+      {"kind": "component", "ref": "agentlib.session", "symbol": "impact_scope"},
+      {"kind": "decision", "ref": "25"}
+    ]
+  },
+  {
+    "case_id": "q02_prune_cascade",
+    "query": "prune_graph_node cascade",
+    "category": "exact-term",
+    "golden_answer": "prune_graph_node is the one gated tool; its cascade parameter is required with no default, and node_only leaves orphan edges for verify_graph_integrity to flag. The authored decisions layer is never cascaded.",
+    "anchors": [
+      {"kind": "component", "ref": "tools.graph_write", "symbol": "prune_graph_node"},
+      {"kind": "decision", "ref": "14"}
+    ]
+  },
+  {
+    "case_id": "q03_rrf_acronym",
+    "query": "RRF",
+    "category": "acronym",
+    "golden_answer": "RRF is reciprocal rank fusion: it fuses the dense and BM25 rankings by position, k=60, so the two arms' incomparable scores never have to be normalised onto one scale.",
+    "anchors": [
+      {"kind": "component", "ref": "retrieval.fuse", "symbol": "rrf"}
+    ]
+  },
+  {
+    "case_id": "q04_uid_acronym",
+    "query": "what does uid mean here",
+    "category": "acronym",
+    "golden_answer": "uid means symbol_uid: resolve_uid(component) emits a 'Kind:path' key that every overlay row joins on, collapsing the three spellings of a module to one key.",
+    "anchors": [
+      {"kind": "component", "ref": "overlay.uid"}
+    ]
+  },
+  {
+    "case_id": "q05_loop_forever",
+    "query": "what stops the agent from looping forever",
+    "category": "lexical-vs-semantic",
+    "golden_answer": "A max-step cap is the floor and stall detection is the real stop: a repeated identical tool call ends the run. detect_stall owns that check in code, not the model.",
+    "anchors": [
+      {"kind": "component", "ref": "agentlib.guards", "symbol": "detect_stall"},
+      {"kind": "decision", "ref": "10"}
+    ]
+  },
+  {
+    "case_id": "q06_risky_action_human",
+    "query": "how do we make sure a risky action needs a human first",
+    "category": "lexical-vs-semantic",
+    "golden_answer": "Irreversible actions are gated: the destructive tool proceeds only on an explicit human 'y'. The approval gate is fail-safe — anything other than an explicit yes is a no.",
+    "anchors": [
+      {"kind": "component", "ref": "agentlib.approval"},
+      {"kind": "decision", "ref": "3"}
+    ]
+  },
+  {
+    "case_id": "q07_what_tools",
+    "query": "what tools does the agent have",
+    "category": "near-duplicate",
+    "golden_answer": "The tools are the knowledge-graph read/write tools plus utility and retrieval tools, assembled in tools/__init__.py's TOOL_FUNCTIONS and offered to the model via bind_tools.",
+    "anchors": [
+      {"kind": "component", "ref": "tools"}
+    ]
+  },
+  {
+    "case_id": "q08_why_json_graph",
+    "query": "why is the graph a JSON file and not a database",
+    "category": "why-question",
+    "golden_answer": "The structural graph is stored as a single JSON file because HW1 forbids extra dependencies and JSON is inspectable and diffable in PRs; SQLite and a graph DB were rejected.",
+    "anchors": [
+      {"kind": "decision", "ref": "1"}
+    ]
+  },
+  {
+    "case_id": "q09_visibility_enforced",
+    "query": "where is visibility enforced",
+    "category": "multi-hop",
+    "golden_answer": "Visibility is enforced in the query, never in the prompt: a visible_to / _visibility_clause WHERE predicate on the same query as the scan, in both the overlay and the retrieval store.",
+    "anchors": [
+      {"kind": "component", "ref": "retrieval.store", "symbol": "_visibility_clause"},
+      {"kind": "decision", "ref": "24"}
+    ]
+  },
+  {
+    "case_id": "q10_kubernetes_oob",
+    "query": "what is our kubernetes ingress configuration",
+    "category": "out-of-corpus",
+    "golden_answer": "",
+    "anchors": []
+  },
+  {
+    "case_id": "q11_resolve_uid",
+    "query": "resolve_uid",
+    "category": "exact-term",
+    "golden_answer": "resolve_uid(component) is the one function that turns a module path or repo path into the canonical 'Kind:path' symbol_uid every overlay row keys on.",
+    "anchors": [
+      {"kind": "component", "ref": "overlay.uid", "symbol": "resolve_uid"},
+      {"kind": "decision", "ref": "22"}
+    ]
+  },
+  {
+    "case_id": "q12_search_corpus",
+    "query": "search_corpus",
+    "category": "exact-term",
+    "golden_answer": "search_corpus is the retrieval tool the agent may call: hybrid ranked search over the corpus with a rerank flag, not a fixed pipeline stage that runs before every request.",
+    "anchors": [
+      {"kind": "component", "ref": "tools.retrieval_tools", "symbol": "search_corpus"},
+      {"kind": "decision", "ref": "60"}
+    ]
+  },
+  {
+    "case_id": "q13_radf_acronym",
+    "query": "what does RADF stand for",
+    "category": "acronym",
+    "golden_answer": "RADF is the Responsible Agentic Development Framework: a multi-agent system that keeps a persistent knowledge graph of a codebase so sessions stop re-deriving architecture.",
+    "anchors": [
+      {"kind": "doc", "ref": "1. Purpose"}
+    ]
+  },
+  {
+    "case_id": "q14_why_decisions_separate",
+    "query": "why are decisions kept separate from the structural graph",
+    "category": "why-question",
+    "golden_answer": "Decisions live in a separate authored overlay joined to structure by symbol_uid, never written into indexer-owned nodes, because any re-index regenerates the derived layer wholesale and would delete anything injected into it.",
+    "anchors": [
+      {"kind": "decision", "ref": "5"}
+    ]
+  },
+  {
+    "case_id": "q15_why_ambient_identity",
+    "query": "why is identity not a tool argument",
+    "category": "why-question",
+    "golden_answer": "Identity and write scope are ambient, read from the session, never tool arguments: if identity were a parameter, 'you are now acting as alice' in the model's context would be enough to write as alice.",
+    "anchors": [
+      {"kind": "decision", "ref": "25"}
+    ]
+  },
+  {
+    "case_id": "q16_why_handwritten_bm25",
+    "query": "why is BM25 hand-written instead of using Postgres full text search",
+    "category": "why-question",
+    "golden_answer": "Postgres ts_rank_cd is not BM25 — it has no IDF — and IDF is the entire reason the lexical arm beats dense retrieval on rare identifiers, so BM25 is hand-written Okapi rather than delegated to FTS.",
+    "anchors": [
+      {"kind": "decision", "ref": "58"},
+      {"kind": "component", "ref": "retrieval.bm25"}
+    ]
+  },
+  {
+    "case_id": "q17_private_notes",
+    "query": "how does the system keep one user's private notes from leaking to another user",
+    "category": "lexical-vs-semantic",
+    "golden_answer": "Private rows carry a visibility and the query ANDs a visible_to predicate against the current user — filtered in SQL, never by handing the model all rows and instructing it to ignore some.",
+    "anchors": [
+      {"kind": "decision", "ref": "24"},
+      {"kind": "component", "ref": "retrieval.store", "symbol": "_visibility_clause"}
+    ]
+  },
+  {
+    "case_id": "q18_destructive_tool_called",
+    "query": "what happens when a destructive tool is called",
+    "category": "lexical-vs-semantic",
+    "golden_answer": "It is gated: prune_graph_node is the only gated tool because irreversibility decides the gate, and it proceeds only on explicit human confirmation while append and scan stay ungated.",
+    "anchors": [
+      {"kind": "decision", "ref": "3"},
+      {"kind": "component", "ref": "tools.graph_write", "symbol": "prune_graph_node"}
+    ]
+  },
+  {
+    "case_id": "q19_langchain_when",
+    "query": "were we allowed to use LangChain and did that change",
+    "category": "multi-hop",
+    "golden_answer": "HW1 forbade frameworks so the loop was raw Python; the framework refactor was deferred to Session 9 and later done in HW4, which superseded that decision for langgraph/langchain only.",
+    "anchors": [
+      {"kind": "decision", "ref": "2"},
+      {"kind": "decision", "ref": "49"}
+    ]
+  },
+  {
+    "case_id": "q20_request_to_edit",
+    "query": "how does a change request become an applied edit",
+    "category": "multi-hop",
+    "golden_answer": "The planner reads the graph to find what a change touches and what constrains it, the executor turns that plan into edits, and apply_change is the gated tool that lands the write.",
+    "anchors": [
+      {"kind": "component", "ref": "agents.planner"},
+      {"kind": "component", "ref": "tools.apply_change"}
+    ]
+  },
+  {
+    "case_id": "q21_rerank_bands",
+    "query": "how does the reranker score candidates",
+    "category": "why-question",
+    "golden_answer": "The reranker sorts candidates into three named bands (answers / related / unrelated) and defers to fused order within a band, never a 0-10 score, so it can only reorder across bands and cannot destroy the fusion signal.",
+    "anchors": [
+      {"kind": "decision", "ref": "65"},
+      {"kind": "component", "ref": "retrieval.rerank"}
+    ]
+  },
+  {
+    "case_id": "q22_operating_rules",
+    "query": "list the project's operating rules",
+    "category": "near-duplicate",
+    "golden_answer": "The operating rules cover ownership boundaries, git discipline, updating ARCHITECTURE.md after every implementation, no unnecessary dependencies, and gating irreversible actions.",
+    "anchors": [
+      {"kind": "doc", "ref": "OPERATING_RULES"}
+    ]
+  },
+  {
+    "case_id": "q23_lambda_oob",
+    "query": "what is the memory limit on our AWS Lambda functions",
+    "category": "out-of-corpus",
+    "golden_answer": "",
+    "anchors": []
+  },
+  {
+    "case_id": "q24_metrics_order",
+    "query": "why must the eval metrics read the retriever's order",
+    "category": "why-question",
+    "golden_answer": "MRR and nDCG read rank position while hit rate, precision and recall do not; feed a repacked list to all five and two silently degrade while three look fine, so search() returns retriever order and repacking happens downstream.",
+    "anchors": [
+      {"kind": "decision", "ref": "59"}
+    ]
+  }
+]

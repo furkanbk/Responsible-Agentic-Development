@@ -161,6 +161,36 @@ class TestScriptedModel:
         out = run_planner("do something", verbose=False)
         assert out.status == "failed"
 
+    def test_retrieval_supplies_the_seed_when_the_model_names_none(self, graph, monkeypatch):
+        """T14.13: the HW4 bug — an empty model seed no longer fails the run.
+
+        Before, `{"seed": ""}` returned `AgentResult.failed`. Now the seed is
+        resolved through `search_corpus`; when the model still names nothing, the
+        top retrieved component is used, so a request the corpus can place reaches
+        the same walk. Retrieval is stubbed here so the path is exercised with no
+        Postgres — the live version is covered by the retrieval suite.
+        """
+        monkeypatch.setattr(planner_mod, "_retrieve_seed_candidates",
+                            lambda request, **k: ["pkg.b"])
+        monkeypatch.setattr(planner_mod, "call",
+                            lambda *a, **k: Result(text='{"seed": "", "steps": []}'))
+
+        out = run_planner("make the b behaviour clearer", max_hops=2, verbose=False)
+        assert out.status == "ok"
+        assert set(out.result["impacted"]) == {
+            "Module:pkg.b", "Module:pkg.a", "Module:top"}
+
+    def test_a_model_seed_still_wins_over_the_retrieved_candidate(self, graph, monkeypatch):
+        """The candidates guide but do not override: a named seed is honoured."""
+        monkeypatch.setattr(planner_mod, "_retrieve_seed_candidates",
+                            lambda request, **k: ["pkg.a"])
+        monkeypatch.setattr(planner_mod, "call",
+                            lambda *a, **k: Result(text='{"seed": "pkg.b", "steps": []}'))
+
+        out = run_planner("change b", max_hops=2, verbose=False)
+        assert out.status == "ok"
+        assert "Module:pkg.b" in out.result["impacted"]
+
 
 # --- online: a real model resolving the seed (HW4, T13b / CLAUDE.md §8) --------
 
