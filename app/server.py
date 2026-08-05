@@ -80,7 +80,8 @@ POLL_SECONDS = 0.4
 #
 #   system    the process itself — boot, queue, transport
 #   user      a human
-#   agent     the channel's single read-only Q&A agent
+#   qa-agent  the channel's single read-only Q&A agent (the ONLY agent on
+#             the question path — there is no planner or executor there)
 #   planner   agents.planner
 #   executor  agents.executor
 #   gate      the approval gate (nobody's agent — it is the human's turn)
@@ -89,7 +90,7 @@ POLL_SECONDS = 0.4
 # prefix service.py already prints, and a run record's steps belong to the
 # executor when the run came from the orchestrator and to the channel agent
 # otherwise — the planner makes no `run_agent` tool calls at all (#66).
-ACTORS = ("system", "user", "agent", "planner", "executor", "gate")
+ACTORS = ("system", "user", "qa-agent", "planner", "executor", "gate")
 
 
 def _unrepr(text: str) -> str:
@@ -379,6 +380,32 @@ def _short(value: Any, limit: int = 120) -> str:
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
+# What `search_corpus`'s `score` actually is, when the reranker ran: the value
+# of the named band the reranker put the chunk in (retrieval/rerank.py BANDS),
+# NOT a similarity. So the panel prints the band name.
+#
+# Showing "1.0" was actively misleading in two directions: it reads as "100%
+# match" when it means "the reranker judged this as answering the question", and
+# a whole result list of 1.0s reads as a broken scorer when it means all five
+# candidates landed in the top band — which is the reranker working. It also
+# contradicted the design it was displaying: decision #65 chose three named
+# bands over a numeric score precisely so a human could audit the judgement, and
+# rendering the band back as a float threw that away at the last step.
+_BANDS = {1.0: "answers", 0.5: "related", 0.0: "unrelated"}
+
+
+def _score_label(row: dict[str, Any], reranked: bool) -> str:
+    score = row.get("score")
+    if not isinstance(score, (int, float)):
+        return ""
+    if reranked:
+        return _BANDS.get(round(float(score), 3), f"band {score}")
+    # Not reranked: this is the RRF fusion score — a small float whose absolute
+    # value means nothing on its own, only its order. Labelled so it cannot be
+    # mistaken for a band or a percentage.
+    return f"rrf {score:.4f}"
+
+
 def _tool_summary(step: dict[str, Any]) -> tuple[str, str]:
     """One line per tool call: what was asked, and what came back.
 
@@ -397,12 +424,14 @@ def _tool_summary(step: dict[str, Any]) -> tuple[str, str]:
         return call, f"error: {out['error']}"
     if name == "search_corpus" and isinstance(out, dict):
         hits = out.get("results") or []
+        reranked = bool(out.get("reranked"))
         top = "; ".join(
-            f"#{h.get('rank')} {h.get('symbol') or h.get('heading_path') or h.get('chunk_id')}"
-            f" ({h.get('score')})"
+            f"#{h.get('rank')} "
+            f"{h.get('symbol') or h.get('heading_path') or h.get('chunk_id')}"
+            + (f" [{lbl}]" if (lbl := _score_label(h, reranked)) else "")
             for h in hits[:3]
         )
-        tag = "reranked" if out.get("reranked") else "fused"
+        tag = "reranked" if reranked else "fused (no rerank)"
         return call, f"{out.get('count', len(hits))} passages, {tag} — {top or 'none'}"
     if name == "query_component_graph" and isinstance(out, dict):
         node = (out.get("node") or {}).get("id")
@@ -466,7 +495,7 @@ def expand_run(run: dict[str, Any]) -> None:
     # call that never enters a trace (#66). Any other run is the channel's single
     # read-only Q&A agent (or the CLI's), which is one agent, not two.
     from_orchestrator = agent == "orchestrator"
-    step_actor = "executor" if from_orchestrator else "agent"
+    step_actor = "executor" if from_orchestrator else "qa-agent"
 
     if request and not LOG.already_showed_user(request):
         LOG.add("user", request, actor="user",
@@ -501,7 +530,7 @@ def expand_run(run: dict[str, Any]) -> None:
     answer = run.get("answer")
     if answer:
         LOG.add("answer", _short(answer, 400),
-                actor="executor" if from_orchestrator else "agent",
+                actor="executor" if from_orchestrator else "qa-agent",
                 detail=f"stopped: {run.get('stopped')}")
     else:
         LOG.add("note", f"turn ended: {run.get('stopped')}", actor=step_actor)

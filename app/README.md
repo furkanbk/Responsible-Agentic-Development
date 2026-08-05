@@ -89,12 +89,51 @@ shares one `RunLog` between both agents, so the executor's tool calls sit in
 `steps` while the planner's envelope — the plan those calls implement — sits later
 in `envelopes`. The panel emits the plan first. See `expand_run`.
 
-## What the panel colours mean
+## Reading a row
 
-`boot` infrastructure · `user` a human · `agent` who picked the turn up ·
-`tool` a tool call · `plan` the planner's impact scope · `exec` the handover to
-the executor · `gate` an approval prompt or a declined write · `answer` what went
-back · `note` / `error` everything else.
+Every row carries an **actor** (who) and a **kind** (what). The actor drives the
+badge and the row's left rule; the kind tints the message.
+
+| actor | who it is |
+| --- | --- |
+| `user` | a human |
+| `qa-agent` | the channel's single read-only Q&A agent — **the only agent on the question path**; there is no planner or executor there |
+| `planner` | `agents.planner` — seed, impact scope, constraints (change path only) |
+| `executor` | `agents.executor` — the tool calls that implement the plan |
+| `gate` | the approval gate; at that moment it is the human's turn |
+| `system` | the process — boot, queue, transport |
+
+Kinds: `boot` `user` `agent` `tool` `plan` `exec` `gate` `answer` `note` `error`.
+
+A **question** shows `user → qa-agent → answer`. A **`/change`** shows
+`user → planner → executor → gate`. If you only ever see `qa-agent`, you are
+looking at the question path — that is correct, not missing attribution.
+
+## The `[answers]` tag on search results
+
+`search_corpus` rows read like:
+
+```
+5 passages, reranked — #1 app.theme [answers]; #2 guidance/04-slides.md [answers]
+```
+
+`answers` / `related` / `unrelated` are the reranker's three **named bands**
+(`retrieval/rerank.py`), not similarity scores. `answers` means the reranker
+judged the passage as directly answering the query. All five hits landing in the
+top band is the reranker working, not a broken scorer.
+
+The panel prints the band name rather than the raw value it is stored as
+(`1.0`/`0.5`/`0.0`) because decision #65 chose named bands over a numeric score
+precisely so a human could audit the judgement — rendering `1.0` reads as "100%
+match", which is neither what it means nor something the reranker can know.
+
+With `rerank: false` there are no bands, so rows show `rrf 0.0328` — the fusion
+score, whose absolute value means nothing on its own, only its order.
+
+## Resizing the panel
+
+Drag the divider. Double-click it to reset. The width is remembered across
+reloads, so you can set it once for the projector.
 
 A **declined** gate renders as `gate`, not `error`. A human saying no to an
 irreversible write is the gate working, and colouring it red teaches a demo

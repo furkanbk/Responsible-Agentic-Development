@@ -162,9 +162,25 @@
   }
   .caption { font-size: 13px; color: var(--dim); }
 
+  /* The drag handle. Its own element rather than a CSS resize on .logs, because
+     the panel has to grow LEFTWARD and `resize` only ever grows an element down
+     and right. Wider hit area than it looks: 6px of visible rule, 11px of grab. */
+  .split {
+    flex: 0 0 11px; cursor: col-resize; position: relative;
+    background: transparent; align-self: stretch;
+  }
+  .split::before {
+    content: ""; position: absolute; inset: 0 4px;
+    background: var(--line); transition: background .12s ease;
+  }
+  .split:hover::before, .split.dragging::before { background: var(--c-agent); }
+  body.dragging { cursor: col-resize; user-select: none; }
+
   /* --- right: the trace --- */
   .logs {
-    flex: 0 0 clamp(380px, 34vw, 560px); min-height: 0;
+    /* `flex-basis` is what the drag writes to, so it is set here once and then
+       owned by the splitter. */
+    flex: 0 0 clamp(320px, 36vw, 620px); min-height: 0;
     background: var(--panel); border-left: 1px solid var(--line);
     display: flex; flex-direction: column;
     font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
@@ -233,8 +249,22 @@
      layout rather than squeezing both into nothing. */
   @media (max-width: 900px) {
     body { flex-direction: column; }
-    .logs { flex: 1 1 40%; border-left: none; border-top: 1px solid var(--line); }
+    .logs { flex: 1 1 40% !important; border-left: none; border-top: 1px solid var(--line); }
+    .split { display: none; }   /* a horizontal drag on a vertical stack is a lie */
   }
+
+  /* A one-line key, so "planner" vs "executor" does not need narrating. */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 4px 9px;
+    padding: 6px 12px; border-bottom: 1px solid var(--line);
+    font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .legend span { font-weight: 700; }
+  .lg-user { color: var(--c-user); }
+  .lg-qa { color: var(--c-agent); }
+  .lg-planner { color: var(--c-plan); }
+  .lg-executor { color: var(--c-exec); }
+  .lg-gate { color: var(--c-gate); }
 </style>
 </head>
 <body>
@@ -269,13 +299,22 @@
   </div>
 </section>
 
-<section class="logs">
+<div class="split" id="split" title="drag to resize"></div>
+
+<section class="logs" id="logs">
   <header>
     <span class="dot" id="dot"></span>
     <span>system trace</span>
     <span style="flex:1"></span>
     <span id="counter"></span>
   </header>
+  <div class="legend">
+    <span class="lg-user">user</span>
+    <span class="lg-qa">qa-agent</span>
+    <span class="lg-planner">planner</span>
+    <span class="lg-executor">executor</span>
+    <span class="lg-gate">gate</span>
+  </div>
   <div class="feed" id="feed"></div>
 </section>
 
@@ -302,6 +341,51 @@ async function nextMeme() {
 }
 btn.addEventListener('click', nextMeme);
 nextMeme();
+
+// --- the splitter ---
+// Writes flex-basis on .logs, measured from the RIGHT edge of the window so the
+// panel tracks the cursor directly whichever way you drag. Clamped so neither
+// side can be dragged to nothing — a panel you cannot get back is worse than one
+// that is the wrong width. Remembered across reloads, because the right width
+// depends on the projector, and re-dragging it every reload during a demo is
+// exactly the kind of small friction that shows.
+const logsEl = document.getElementById('logs');
+const split = document.getElementById('split');
+const MIN_PANEL = 280, MIN_STAGE = 360;
+
+const saved = Number(localStorage.getItem('radf.panelWidth'));
+if (saved) logsEl.style.flexBasis = saved + 'px';
+
+function setPanel(px) {
+  const max = window.innerWidth - MIN_STAGE;
+  const w = Math.max(MIN_PANEL, Math.min(px, max));
+  logsEl.style.flexBasis = w + 'px';
+  localStorage.setItem('radf.panelWidth', String(w));
+}
+
+split.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  split.setPointerCapture(e.pointerId);
+  split.classList.add('dragging');
+  document.body.classList.add('dragging');
+});
+split.addEventListener('pointermove', e => {
+  if (!split.classList.contains('dragging')) return;
+  setPanel(window.innerWidth - e.clientX);
+});
+function endDrag(e) {
+  if (!split.classList.contains('dragging')) return;
+  split.classList.remove('dragging');
+  document.body.classList.remove('dragging');
+  try { split.releasePointerCapture(e.pointerId); } catch (_) {}
+}
+split.addEventListener('pointerup', endDrag);
+split.addEventListener('pointercancel', endDrag);
+// Double-click resets to the default, so a drag is never a one-way door.
+split.addEventListener('dblclick', () => {
+  localStorage.removeItem('radf.panelWidth');
+  logsEl.style.flexBasis = '';
+});
 
 // --- the knowledge panel ---
 // Shows the two layers side by side because their separation is the point: the
