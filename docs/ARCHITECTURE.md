@@ -582,6 +582,16 @@ not collide in this table.
 | 66 | 2026-08-05 | agents.planner | The planner's seed is resolved **through `search_corpus`** (`source="components"`): retrieved cards are shown to the model as a candidate list, and if the model still names no seed the **top-ranked candidate is used** rather than failing the run | keeping the blind prompt and instead dumping the whole node list into it (the fix originally filed in HW4); making retrieval a hard import so the planner cannot run without Postgres | Closes the HW4-filed bug: `_propose_seed_and_steps` asked the live cheap model to name a component with *no list in front of it* and forbade inventing files, so it returned `{"seed":""}` and `run_planner` failed on a request it should have planned. Retrieval is the better fix the TODO (T14.13) named: it makes the model *pick* from a pre-narrowed, ranked list rather than recall a name (the graph is the router, #27), and the empty-seed fallback to the top hit means a retrievable request can no longer fail on a blank seed. `search_corpus` is imported lazily and any failure (no Postgres, no `psycopg`, empty index) degrades to the original blind prompt, so the offline suite and a no-database checkout keep working — retrieval improves the seed, it is not a new dependency of planning. Scope stays ambient (#25): the tool exposes no identity/scope arg to leak. The *second* filed planner defect (`_brace_slice` using `rfind("}")` not the matching brace) is deliberately **not** folded in here — it lands as its own change (`overlay/summarize.py` has the depth-scan to copy). |
 | 67 | 2026-08-05 | eval/ (retrieval metrics) | The five rank metrics are scored with three fixed conventions: **empty-golden cases are `None` (undefined), not 0** and are excluded from every average and counted separately; **precision@k's denominator is what was returned** (`min(k, len)`), not a flat `k`; and every metric reads **`Hit.rank`**, never list position | scoring out-of-corpus cases as 0 (the intuitive default); flat-`k` precision (the textbook default); trusting `search()`'s list order without re-reading `rank` | Each convention is a specific wrong number avoided. (1) An out-of-corpus query has no relevant chunk, so precision/recall/MRR/nDCG have *no value*; scoring 0 punishes correct abstention and drags the mean down, so `None` + `mean()` that skips `None` keeps the average honest and the excluded count is reported. A third status, **`unresolved`** (anchors declared but none resolve against the live index — a stale golden), is excluded and counted the same way, so a re-chunk that moved the goldens surfaces as a number rather than as depressed recall. (2) "Fraction of *what you returned*" (the assignment's words) diverges from flat-`k` only when the retriever returned fewer than `k`, where flat-`k` penalises a short list for being short. (3) `search()` returns retriever order (#59), but `ranked_ids_from_hits` sorts on `Hit.rank` anyway so a repack, a `set`, or a dict round-trip upstream cannot silently feed MRR/nDCG the wrong order. Goldens are **content anchors resolved at load** (decision, symbol, heading), not chunk ids, because ids are `sha1(identity)[:16]` and move on every re-chunk (contract #10). |
 
+### Demo-branch decisions
+
+`#68-#69` stay reserved for HW5 Phase D (generation metrics); the `final-demo` branch takes
+**#70-#71** so the two do not collide in this table.
+
+| # | Date | Component | Decision | Rejected alternative | Why |
+|---|------|-----------|----------|----------------------|-----|
+| 70 | 2026-08-05 | service.py | `search_corpus` is added to `_READ_TOOLS`, so the **channel path** offers it too — the same tool `main.py` has offered since Phase B | leaving the channel registry as the four exact lookups; adding it only for allowlisted users | The omission was a gap, not a posture: §7.3 makes `search_corpus` "a tool the existing agent chooses to call", and the channel is where the agent is most often asked. The four exact lookups all require the asker to *already name a component*, which is how a maintainer asks and is not how anyone else does — the observed channel runs are questions like "dont you see my previous messages?" answered with zero tool calls, because nothing offered could take an unnamed target. Safe on the anonymous path for the reason the others are: `retrieval.store._visibility_clause` mirrors `overlay.db.visible_to` against the ambient `current_user()` inside the SQL, on **both** the dense and the lexical arm (#24, #25) — the model is never handed rows it must be told to ignore. Read-only, so ungated (§5). No new import risk: `psycopg` is imported lazily inside `retrieval.store.connect`, so a checkout without Postgres degrades to the `index_unavailable` branch (#64) rather than failing `service.py` at import. |
+| 71 | 2026-08-05 | app/ | The demo surface is a **read-only observer** over `app/logs/service.log` and `store/runs/runs.jsonl`; it imports no agent code, opens no store, and adds no dependency | instrumenting the agent to emit demo events; a websocket/callback hook inside `run_agent`; a web framework | A demo that changes the thing it demonstrates is not evidence. Both files already exist for their own reasons — stdout because `service.py` prints its stages, `runs.jsonl` because the monitor grades it out of band (#40) — so the panel is assembled from what the system already produces and deleting `app/` leaves behaviour byte-identical. Both sources are needed and neither suffices: stdout is live but coarse, the run record is exact but only lands when the turn ends. The run record is also replayed **out of file order** — a `/change` run shares one `RunLog`, so the executor's tool calls sit in `steps` while the planner's envelope sits later in `envelopes`, and replaying the file's order shows the executor acting before the plan exists. `http.server` over a framework for the same reason as #58: the stdlib already covers it, and one button does not justify a dependency (§4). |
+
 ---
 
 ## 6. Known gaps / deferred to later homeworks
@@ -848,13 +858,19 @@ approves; everything else, including a timeout and including shutdown, declines.
 python service.py                 # listen on Telegram
 python service.py --dry-run       # queue policy, no network, no model
 build_channel_registry(can_write) -> (schemas, registry)
-  read-only : query_component_graph, retrieve_decisions, retrieve_memory,
-              verify_graph_integrity
+  read-only : search_corpus, query_component_graph, retrieve_decisions,
+              retrieve_memory, verify_graph_integrity
   +can_write: append_decision_record, save_memory
 ```
 Both registries are built from explicit lists, never by filtering the full registry — a
 filter is one bug away from being a full registry. No `GATED` tool appears in either; writes
 go through `/change`, which runs the HW2 orchestrator with the gate wired to the channel.
+
+`search_corpus` joined the read-only list on the demo branch (decision #70) and leads it, as
+in `tools/__init__.py`: it is the only one of the four that takes a question phrased the way
+people phrase them in a chat window and returns something to look up. Visibility is still a
+`WHERE` clause on both retrieval arms (#24), so the anonymous path is unchanged, and it needs
+no gate because it is read-only.
 
 ### 8.3 `store/radf.db` — the `silences` table
 

@@ -61,13 +61,27 @@ from overlay.uid import resolve_uid
 from tools.decisions import append_decision_record, retrieve_decisions, verify_graph_integrity
 from tools.graph_query import query_component_graph
 from tools.memory_tools import retrieve_memory, save_memory
+from tools.retrieval_tools import search_corpus
 
 CHANGE_PREFIX = "/change"
 MAX_STEPS = 8
 
 # Narrow by construction. Anyone may read the team's published knowledge.
-_READ_TOOLS = (query_component_graph, retrieve_decisions, retrieve_memory,
-               verify_graph_integrity)
+#
+# `search_corpus` leads, matching `tools/__init__.py`'s ordering and for its
+# reason: it is the only one of the four that takes a question phrased the way
+# people phrase them in a chat window — "which bit handles the approval prompt" —
+# and returns something to look up. The two exact lookups then take over. Without
+# it the channel path could only answer questions that already named a component,
+# which is most of what a stranger asks and none of how they ask it.
+#
+# Safe on the anonymous path for the same reason the others are: visibility is a
+# `WHERE` clause (#24) — `retrieval.store._visibility_clause` mirrors
+# `overlay.db.visible_to` against the ambient `current_user()`, on BOTH the dense
+# and the lexical arm — not an instruction asking the model to skip rows. And it
+# is read-only, so it stays ungated (CLAUDE.md §5).
+_READ_TOOLS = (search_corpus, query_component_graph, retrieve_decisions,
+               retrieve_memory, verify_graph_integrity)
 # Additionally available to an allowlisted user. Still no `apply_change` and no
 # `prune_graph_node` — those belong to the change pipeline and to T11.3.
 _WRITE_TOOLS = (append_decision_record, save_memory)

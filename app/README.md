@@ -52,16 +52,18 @@ A **declined** gate renders as `gate`, not `error`. A human saying no to an
 irreversible write is the gate working, and colouring it red teaches a demo
 audience the opposite of the lesson.
 
-## Known gap: retrieval is invisible on the Telegram path
+## Retrieval on the Telegram path
 
-`search_corpus` is **not** in `service.py`'s `_READ_TOOLS`, so a plain question
-asked over Telegram never calls it. It *is* used on the `/change` path, but as a
-direct Python call inside `agents/planner.py::_retrieve_seed_candidates` — not a
-model-chosen tool call — so it appears in no trace either.
+`search_corpus` is in `service.py`'s `_READ_TOOLS` (decision #70), so a question
+asked over Telegram can call it and the panel shows the ranked passages, their
+scores, and whether the reranker or the fused order produced them. It is a tool
+the model *chooses* — a question that names a component outright will go straight
+to `query_component_graph` instead, and that is correct (#60).
 
-Where retrieval *is* visible today is `main.py` (the CLI), whose registry does
-offer `search_corpus`; run a question there and the panel shows the ranked
-passages, their scores, and whether the reranker or the fused order produced them.
+One place it still will not show: the `/change` path uses retrieval inside
+`agents/planner.py::_retrieve_seed_candidates` as a direct Python call, not a
+model-chosen tool call (#66), so it lands in no trace. What the panel shows there
+is the *result* of it — the planner's `impact_scope` line.
 
-Closing the gap on the Telegram path is one line in `service.py` and is a
-behaviour change, so it is not made here.
+Ask a question phrased the way people phrase them ("which bit handles the
+approval prompt", "why is the graph a JSON file") to see the retrieval arm work.
