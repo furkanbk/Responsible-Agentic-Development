@@ -71,6 +71,34 @@ POLL_SECONDS = 0.4
 #   answer   what went back to the human
 #   note     anything else worth seeing
 #   error    a failure
+#
+# `actor` is orthogonal to `kind` and answers the other question a viewer has —
+# *who* did this. It matters because the system is three different things wearing
+# one log: a single read-only agent on the question path, and a planner and an
+# executor on the change path. "A tool was called" is much less useful than "the
+# EXECUTOR called a tool", especially at the moment the plan is handed over.
+#
+#   system    the process itself — boot, queue, transport
+#   user      a human
+#   agent     the channel's single read-only Q&A agent
+#   planner   agents.planner
+#   executor  agents.executor
+#   gate      the approval gate (nobody's agent — it is the human's turn)
+#
+# Attribution is structural, never guessed: stdout lines carry their stage in the
+# prefix service.py already prints, and a run record's steps belong to the
+# executor when the run came from the orchestrator and to the channel agent
+# otherwise — the planner makes no `run_agent` tool calls at all (#66).
+ACTORS = ("system", "user", "agent", "planner", "executor", "gate")
+
+
+def _unrepr(text: str) -> str:
+    """Strip the quotes `service.py`'s `!r` adds, and the ellipsis if truncated."""
+    text = (text or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        text = text[1:-1]
+    return text.rstrip("…").strip()
+
 
 class EventLog:
     def __init__(self) -> None:
@@ -78,7 +106,8 @@ class EventLog:
         self._lock = threading.Lock()
         self._seq = 0
 
-    def add(self, kind: str, text: str, *, detail: str = "", section: str = "chat") -> None:
+    def add(self, kind: str, text: str, *, detail: str = "", section: str = "chat",
+            actor: str = "system") -> None:
         with self._lock:
             self._seq += 1
             self._events.append({
@@ -86,6 +115,7 @@ class EventLog:
                 "ts": datetime.now(timezone.utc).strftime("%H:%M:%S"),
                 "section": section,
                 "kind": kind,
+                "actor": actor,
                 "text": text,
                 "detail": detail,
             })
@@ -97,18 +127,27 @@ class EventLog:
             return [e for e in self._events if e["seq"] > seq]
 
     def already_showed_user(self, text: str) -> bool:
-        """Did the live tailer already print this exact inbound message?
+        """Did the live tailer already print this inbound message?
 
         Both sources carry the human's message: stdout the moment it arrives,
         the run record when the turn ends. The live one is the useful one — it
         is what makes the panel move while the agent thinks — so the record's
         copy is suppressed rather than printed a second time under the answer
         it produced.
+
+        Compared on a **prefix**, not for equality: `service.py` prints
+        `event.text[:80]!r`, so the live copy is repr-quoted and truncated while
+        the run record holds the message in full. Equality silently never
+        matched, and the symptom was every message appearing twice — which reads
+        as a redundant panel rather than as a broken comparison.
         """
+        needle = _unrepr(text)
         with self._lock:
             for event in reversed(self._events):
                 if event["kind"] == "user":
-                    return event["text"] == text
+                    seen = _unrepr(event["text"])
+                    return bool(seen) and (needle.startswith(seen)
+                                           or seen.startswith(needle))
         return False
 
 
@@ -239,49 +278,59 @@ def status_payload() -> dict[str, Any]:
 # which is the planner's retrieval and the seed/hop cap.
 DROP = "drop"
 
-_STDOUT_PATTERNS: list[tuple[re.Pattern, str, str]] = [
-    (re.compile(r"^\[service\] (.+)$"), "boot", r"\1"),
-    (re.compile(r"^\[telegram\] (.+)$"), "note", r"telegram: \1"),
-    # Live: the message lands here seconds before the run record exists.
-    (re.compile(r"^\[(telegram|github|heartbeat)\] (.+?) — (.+)$"), "user", r"\3"),
-    (re.compile(r"^\s*\[QUEUE\] (.+)$"), "note", r"queue: \1"),
-    (re.compile(r"^\s*\[SILENT\] (.+)$"), "note", r"stayed silent: \1"),
+# (pattern, kind, actor, template)
+_STDOUT_PATTERNS: list[tuple[re.Pattern, str, str, str]] = [
+    (re.compile(r"^\[service\] (.+)$"), "boot", "system", r"\1"),
+    # Live: the message lands here seconds before the run record exists. MUST sit
+    # ahead of the generic `[telegram]` pattern below — first match wins, and
+    # this line is the more specific case of it. When it did not, every inbound
+    # message rendered as a system note and `already_showed_user` never fired,
+    # so the run record printed the message again a few seconds later.
+    (re.compile(r"^\[(telegram|github|heartbeat)\] (.+?) — (.+)$"), "user", "user", r"\3"),
+    # Transport noise from channel/telegram.py, which prints indented — the
+    # leading `\s*` is what distinguishes it from the un-indented line above.
+    (re.compile(r"^\s+\[telegram\] (.+)$"), "note", "system", r"telegram: \1"),
+    (re.compile(r"^\s*\[QUEUE\] (.+)$"), "note", "system", r"queue: \1"),
+    (re.compile(r"^\s*\[SILENT\] (.+)$"), "note", "system", r"stayed silent: \1"),
     # Live and load-bearing: a gate is a question somebody has to answer NOW.
-    (re.compile(r"^\s*\[gate->(.+?)\] (.+)$"), "gate", r"approval asked: \2"),
-    (re.compile(r"^\s*\[GATE\] (.+)$"), "gate", r"approval asked: \1"),
-    # Stdout-only. A real `search_corpus` call with real args and real results —
-    # made by Python rather than chosen by the model (#66), which is why it
-    # reaches no run_agent trace. Rendered in the `tool` lane because that is
-    # what it is; the detail names who decided to make it, so the panel shows
-    # the step without claiming the model picked it.
-    (re.compile(r"^\s*\[retrieval\] (.+)$"), "tool", r"\1"),
+    # Attributed to `gate` rather than to the executor that tripped it — at this
+    # moment it is the human's turn, and that is the point of the row.
+    (re.compile(r"^\s*\[gate->(.+?)\] (.+)$"), "gate", "gate", r"approval asked: \2"),
+    (re.compile(r"^\s*\[GATE\] (.+)$"), "gate", "gate", r"approval asked: \1"),
+    # Stdout-only, and the planner's own. A real `search_corpus` call with real
+    # args and real results — made by Python rather than chosen by the model
+    # (#66), which is why it reaches no run_agent trace. Rendered in the `tool`
+    # lane because that is what it is; the detail names who decided to make it,
+    # so the panel shows the step without claiming the model picked it.
+    (re.compile(r"^\s*\[retrieval\] (.+)$"), "tool", "planner", r"\1"),
     # Stdout-only: the seed and the hop cap. `impacted=N` is the count the plan
     # envelope later itemises, and the cap is #34's "visible in the trace".
-    (re.compile(r"^\[planner\] (.+)$"), "plan", r"planner: \1"),
+    (re.compile(r"^\[planner\] (.+)$"), "plan", "planner", r"\1"),
     # Live: the handover beat. The executor's own tool calls arrive with the run
     # record, so only the "starting" line earns a row.
-    (re.compile(r"^\[EXECUTOR\] implementing\s*$"), "exec", "handing over to the executor"),
-    (re.compile(r"^\s*\[ERROR\] (.+)$"), "error", r"\1"),
-    (re.compile(r"^\s*\[silence\] (.+)$"), "note", r"silence policy: \1"),
+    (re.compile(r"^\[EXECUTOR\] implementing\s*$"), "exec", "executor",
+     "picking up the plan"),
+    (re.compile(r"^\s*\[ERROR\] (.+)$"), "error", "system", r"\1"),
+    (re.compile(r"^\s*\[silence\] (.+)$"), "note", "system", r"silence policy: \1"),
 
     # --- said better by the run record ---
-    (re.compile(r"^\s*\[TOOLS\] offered: "), DROP, ""),   # a registry, not a step
-    (re.compile(r"^\s*\[STOPPED\] "), DROP, ""),          # -> run.stopped
-    (re.compile(r"^\[PLANNER\] "), DROP, ""),             # -> the plan envelope
-    (re.compile(r"^\[EXECUTOR\] "), DROP, ""),            # -> the executor envelope
+    (re.compile(r"^\s*\[TOOLS\] offered: "), DROP, "", ""),   # a registry, not a step
+    (re.compile(r"^\s*\[STOPPED\] "), DROP, "", ""),          # -> run.stopped
+    (re.compile(r"^\[PLANNER\] "), DROP, "", ""),             # -> the plan envelope
+    (re.compile(r"^\[EXECUTOR\] "), DROP, "", ""),            # -> the executor envelope
 ]
 
 
-def classify_stdout(line: str) -> Optional[tuple[str, str]]:
-    """`(kind, text)` for a line worth showing; None for noise and for duplicates.
+def classify_stdout(line: str) -> Optional[tuple[str, str, str]]:
+    """`(kind, actor, text)` for a line worth showing; None for noise/duplicates.
 
     First match wins, so the specific patterns above sit ahead of the broad
     `DROP` prefixes they carve exceptions out of.
     """
-    for pattern, kind, template in _STDOUT_PATTERNS:
+    for pattern, kind, actor, template in _STDOUT_PATTERNS:
         match = pattern.match(line.rstrip())
         if match:
-            return None if kind is DROP else (kind, match.expand(template))
+            return None if kind is DROP else (kind, actor, match.expand(template))
     return None
 
 
@@ -306,14 +355,16 @@ def tail_service_log(stop: threading.Event) -> None:
                     for line in chunk.splitlines():
                         hit = classify_stdout(line)
                         if hit:
-                            kind, text = hit
+                            kind, actor, text = hit
                             # `call -> result` renders in the same two-part shape
                             # as a tool row out of runs.jsonl, so a line from
                             # stdout and one from the run record look alike.
                             text, _, detail = text.partition(" -> ")
                             if kind == "tool" and detail:
-                                detail += "   [code-owned: planner seed retrieval]"
-                            LOG.add(kind, text, detail=detail,
+                                detail += "   [code-owned, not a model choice]"
+                            if kind == "user":
+                                text = _unrepr(text)   # service.py prints it !r
+                            LOG.add(kind, text, detail=detail, actor=actor,
                                     section="boot" if kind == "boot" else "chat")
         except OSError:
             pass
@@ -375,20 +426,23 @@ def _emit_envelope(entry: dict[str, Any]) -> None:
         impacted = result.get("impacted") or []
         questions = result.get("open_questions") or []
         LOG.add("plan", f"plan {status} — impact_scope: {len(impacted)} component(s)",
+                actor="planner",
                 detail=(", ".join(impacted[:6]) or "none")
                        + f"  ·  constraints: {len(result.get('constraints') or [])}"
                        + (f"  ·  max_hops: {result.get('impact_max_hops')}"
                           if result.get("impact_max_hops") is not None else ""))
         if questions:
-            LOG.add("gate", f"planner stopped to ask {len(questions)} question(s)",
-                    detail=_short(questions[0], 160))
+            LOG.add("gate", f"stopped to ask {len(questions)} question(s)",
+                    actor="planner", detail=_short(questions[0], 160))
     elif who == "executor":
         changes = result.get("changes") or []
-        LOG.add("exec", f"handed to executor — {status}, {len(changes)} file(s) changed",
+        LOG.add("exec", f"finished — {status}, {len(changes)} file(s) changed",
+                actor="executor",
                 detail=", ".join(str(c.get("path")) for c in changes) or
                        _short(env.get("notes") or "", 160))
     else:
-        LOG.add("note", f"{who}: {status}", detail=_short(env.get("notes") or ""))
+        LOG.add("note", f"{who}: {status}", actor=who if who in ACTORS else "system",
+                detail=_short(env.get("notes") or ""))
 
 
 def expand_run(run: dict[str, Any]) -> None:
@@ -406,14 +460,30 @@ def expand_run(run: dict[str, Any]) -> None:
     request = (run.get("request") or "").strip()
     envelopes = run.get("envelopes") or []
 
+    # Whose tool calls are in `steps`. Structural, not guessed: on the change
+    # path the orchestrator shares ONE run_log between both agents, and only the
+    # executor runs `run_agent` — the planner's own retrieval is a direct Python
+    # call that never enters a trace (#66). Any other run is the channel's single
+    # read-only Q&A agent (or the CLI's), which is one agent, not two.
+    from_orchestrator = agent == "orchestrator"
+    step_actor = "executor" if from_orchestrator else "agent"
+
     if request and not LOG.already_showed_user(request):
-        LOG.add("user", request, detail=f"user={user}  run={run.get('run_id')}")
-    LOG.add("agent", f"picked up by {agent}",
+        LOG.add("user", request, actor="user",
+                detail=f"user={user}  run={run.get('run_id')}")
+    LOG.add("agent",
+            "change request — planner then executor" if from_orchestrator
+            else f"question — single read-only agent ({agent})",
+            actor="system",
             detail=f"user={user}  thread={run.get('thread_id')}  run={run.get('run_id')}")
 
     for entry in envelopes:
         if (entry.get("agent") or "") == "planner":
             _emit_envelope(entry)
+
+    if from_orchestrator and (run.get("steps") or []):
+        LOG.add("exec", "plan handed over — executor takes it from here",
+                actor="executor")
 
     for step in run.get("steps") or []:
         call, result = _tool_summary(step)
@@ -421,7 +491,8 @@ def expand_run(run: dict[str, Any]) -> None:
         # A declined gate is not a failure — it is the gate doing its job, and
         # colouring it red teaches a demo audience the wrong lesson.
         kind = {"ok": "tool", "declined": "gate"}.get(branch, "error")
-        LOG.add(kind, call, detail=result)
+        LOG.add(kind, call, detail=result,
+                actor="gate" if branch == "declined" else step_actor)
 
     for entry in envelopes:
         if (entry.get("agent") or "") != "planner":
@@ -430,9 +501,10 @@ def expand_run(run: dict[str, Any]) -> None:
     answer = run.get("answer")
     if answer:
         LOG.add("answer", _short(answer, 400),
+                actor="executor" if from_orchestrator else "agent",
                 detail=f"stopped: {run.get('stopped')}")
     else:
-        LOG.add("note", f"turn ended: {run.get('stopped')}")
+        LOG.add("note", f"turn ended: {run.get('stopped')}", actor=step_actor)
 
 
 def tail_runs(stop: threading.Event) -> None:
@@ -660,13 +732,14 @@ class Handler(BaseHTTPRequestHandler):
 
 def seed_boot_events() -> None:
     """The header section: what is up, checked live, before anything else prints."""
-    LOG.add("boot", "billion dollar startup — booting", section="boot")
+    LOG.add("boot", "billion dollar startup — booting", section="boot", actor="system")
     for check in status_payload()["checks"]:
         LOG.add("boot" if check["ok"] else "error",
                 f"{'up' if check['ok'] else 'DOWN'}  ·  {check['name']}",
-                detail=check["detail"], section="boot")
-    LOG.add("boot", f"{len(list_memes())} meme(s) in app/memes/", section="boot")
-    LOG.add("boot", "waiting for a Telegram message…", section="boot")
+                detail=check["detail"], section="boot", actor="system")
+    LOG.add("boot", f"{len(list_memes())} meme(s) in app/memes/",
+            section="boot", actor="system")
+    LOG.add("boot", "waiting for a Telegram message…", section="boot", actor="system")
 
 
 def main(argv: list[str] | None = None) -> int:

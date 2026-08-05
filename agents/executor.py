@@ -167,9 +167,20 @@ def run_executor(
         )
 
     if not plan.get("steps"):
-        return AgentResult.ok(
-            {"plan": plan, "changes": []}, agent="executor",
-            notes="plan had no steps — nothing to implement",
+        # A plan with no steps for a change request is a planner fault, not a
+        # finished job: `ok` here reports success for a run that touched nothing,
+        # which is the same wrong signal decision #75 removed from the tail of
+        # `_finish_executor`. It happens when the model names a seed but returns
+        # steps whose `path` is empty, which `_clean_steps` drops.
+        #
+        # `needs_input`, not `blocked` or `failed`: nothing forbade the change and
+        # nothing broke — the plan is simply unusable, and the fix is a human
+        # saying which file they meant.
+        return AgentResult.needs_input(
+            ["the plan named no file to edit — the planner produced a seed but no "
+             "usable steps, so there is nothing to implement. Re-state the request "
+             "naming the file, or re-run the planner."],
+            agent="executor", result={"plan": plan, "changes": []},
         )
 
     schemas, registry = build_executor_registry()
