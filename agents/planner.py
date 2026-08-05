@@ -277,7 +277,7 @@ _PROPOSE_INSTRUCTION = (
 )
 
 
-def _retrieve_seed_candidates(request: str, *, k: int = 5,
+def _retrieve_seed_candidates(request: str, *, k: int = 10,
                               verbose: bool = True) -> list[str]:
     """Component seeds the corpus surfaces for this request, best first.
 
@@ -289,6 +289,18 @@ def _retrieve_seed_candidates(request: str, *, k: int = 5,
     are the candidate seeds. The model then only has to *pick* from a
     pre-narrowed list (the graph is the router, #27), and if it still names
     nothing the top candidate is used rather than failing the run.
+
+    `k=10`, not 5. The candidates are a shortlist the model *picks from*, so the
+    cost of a wrong one is that it is ignored, while the cost of a missing one is
+    a failed or misdirected plan — the asymmetry argues for width. Measured on a
+    live miss: "my apps button to red" put the correct component at **rank 8**,
+    so k=5 excluded it, the seed became the `app` package, and the plan proposed
+    editing a file that does not exist. Across six terse phrasings, k=5 found the
+    right component 4 times and k=10 found it 5.
+
+    Width is not the whole fix and should not be mistaken for one — the sixth
+    query misses at any k, because retrieval can only find what the summary cards
+    actually say (see `app/theme.py`'s docstring for that half of it).
 
     Degrades to `[]` when the index is unavailable (no Postgres, no `psycopg`) or
     empty, so the planner falls back to the pre-existing blind prompt and every
