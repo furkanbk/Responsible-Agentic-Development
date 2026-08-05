@@ -340,8 +340,45 @@ def _parse_json_object(text: str) -> Optional[dict]:
 
 
 def _brace_slice(text: str) -> Optional[str]:
-    start, end = text.find("{"), text.rfind("}")
-    return text[start:end + 1] if start != -1 and end > start else None
+    """The first **balanced** `{...}` object, by depth scan.
+
+    Was `text[find("{") : rfind("}")]`, which is the defect decision #66 filed
+    and deferred to its own change — this is it. `rfind` spans from the first
+    brace to the *last* one anywhere in the reply, so any second object makes the
+    slice unparseable. The live cheap model does exactly that: asked to plan
+    "change the button color to green" it emits the correct object **twice,
+    concatenated**, and the planner failed with "could not parse a seed/steps
+    plan" on a request it had planned correctly a moment earlier.
+
+    Strings are tracked so a `}` inside an `intent` value cannot close the
+    object early. Ported from `overlay/summarize.py::_brace_slice`, which hit
+    the same failure first (~1 cheap-model reply in 4).
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
 
 
 def _clean_steps(steps: Any) -> list[dict]:

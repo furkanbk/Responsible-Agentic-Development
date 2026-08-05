@@ -11,8 +11,10 @@
     --line: #232936;
     --text: #e8ecf3;
     --dim: #8b95a7;
-    --red: #e23c3c;
-    --red-hot: #ff5252;
+    /* Substituted from app/theme.py at request time — see theme.as_substitutions. */
+    --red: {{BUTTON_COLOR}};
+    --red-hot: {{BUTTON_HIGHLIGHT}};
+    --red-deep: {{BUTTON_SHADOW}};
     /* One hue per actor in the trace. Kept few on purpose: a panel with ten
        colours is a panel with none. */
     --c-boot:   #6ee7a8;
@@ -61,12 +63,15 @@
   .btn-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
   button {
     width: 92px; height: 92px; border-radius: 50%; border: none; cursor: pointer;
-    background: radial-gradient(circle at 34% 30%, var(--red-hot), var(--red) 62%, #8f1d1d);
-    box-shadow: 0 8px 0 #7a1717, 0 14px 26px rgba(226,60,60,.35);
+    background: radial-gradient(circle at 34% 30%, var(--red-hot), var(--red) 62%, var(--red-deep));
+    box-shadow: 0 8px 0 var(--red-deep), 0 14px 26px color-mix(in srgb, var(--red) 35%, transparent);
     transition: transform .07s ease, box-shadow .07s ease;
   }
   button:hover { filter: brightness(1.08); }
-  button:active { transform: translateY(6px); box-shadow: 0 2px 0 #7a1717, 0 6px 14px rgba(226,60,60,.3); }
+  button:active {
+    transform: translateY(6px);
+    box-shadow: 0 2px 0 var(--red-deep), 0 6px 14px color-mix(in srgb, var(--red) 30%, transparent);
+  }
   .caption { font-size: 13px; color: var(--dim); }
 
   /* --- bottom third: the trace --- */
@@ -118,13 +123,13 @@
 <body>
 
 <section class="stage">
-  <div class="brand">Billion&nbsp;Dollar&nbsp;<b>Startup</b> · funny memes as a service</div>
+  <div class="brand">{{BRAND_NAME}} · {{BRAND_TAGLINE}}</div>
   <div class="meme-frame" id="frame">
     <div class="empty">no memes yet — drop images into <code>app/memes/</code></div>
   </div>
   <div class="btn-wrap">
     <button id="btn" aria-label="change the meme"></button>
-    <div class="caption">click to change the meme</div>
+    <div class="caption">{{BUTTON_CAPTION}}</div>
   </div>
 </section>
 

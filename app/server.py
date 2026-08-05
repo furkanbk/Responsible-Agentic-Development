@@ -499,8 +499,17 @@ class Handler(BaseHTTPRequestHandler):
         query = urlparse(self.path).query
 
         if path in ("/", "/index.html"):
-            page = STATIC_DIR / "index.html"
-            self._send(200, page.read_bytes(), "text/html; charset=utf-8")
+            # Re-read and re-substitute per request, so an agent that edits
+            # app/theme.py shows up on the next reload with no restart — which
+            # is the whole point of the `/change` half of the demo.
+            html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+            import importlib  # noqa: PLC0415 — reloaded on purpose, see above
+
+            from app import theme  # type: ignore
+            importlib.reload(theme)
+            for token, value in theme.as_substitutions().items():
+                html = html.replace(token, value)
+            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
 
         if path == "/api/status":

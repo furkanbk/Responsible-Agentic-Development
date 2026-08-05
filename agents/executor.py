@@ -254,6 +254,26 @@ def _envelope_from_loop(result: dict, plan: dict, run_log: Any) -> AgentResult:
             agent="executor", result=payload,
         )
 
+    # Nothing was written. For THIS agent that is never `ok`: the executor exists
+    # to carry out a plan, so a run that changes no file either refused or gave
+    # up, and `ok` is the one status that tells the caller neither.
+    #
+    # The case that exposed it is the brief's own escalate rule — "a recorded
+    # decision in `constraints` forbids the change outright" -> `blocked`. That
+    # refusal arrives as an ANSWER with no tool call, so every branch above
+    # misses it and it was landing as `ok` with zero changes, one field away from
+    # a caller concluding the change went in.
+    #
+    # Decided on the trace, never on the answer's prose — flow control must not
+    # depend on a sentence (#29) — and "wrote no files" is a fact about the
+    # trace. WHICH refusal it was stays in `notes`, for the human to read.
+    if not changes:
+        return AgentResult.blocked(
+            result.get("answer")
+            or "the executor wrote no files for a plan that asked for writes",
+            agent="executor", result=payload,
+        )
+
     return AgentResult.ok(
         payload, agent="executor",
         notes=result.get("answer") or f"{len(changes)} file(s) written",
