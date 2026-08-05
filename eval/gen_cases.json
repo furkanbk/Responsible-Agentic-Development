@@ -1,0 +1,98 @@
+{
+  "_comment": [
+    "eval/gen_cases.json — the generation eval set (HW5, T14.14). Owner: Dias.",
+    "",
+    "It EXTENDS eval/cases.json rather than duplicating it. `extends` names the base",
+    "set; the 24 cases there are loaded first and the `cases` below are appended, for",
+    "30 in total. Two reasons for extending and not starting again. First, Parts 2 and",
+    "3 then describe the SAME queries, so 'the retrieval metrics went up and the answer",
+    "metrics did not' is a statement about one system rather than a comparison of two",
+    "unrelated question sets — which is the whole of Part 4. Second, a golden ANSWER is",
+    "already written for every base case; a separate generation set would have meant",
+    "writing 20 more of them and would have measured a different corpus of questions.",
+    "",
+    "The six added here are questions the retrieval metrics cannot fail on but a",
+    "generator can: the corpus contains material that pulls the wrong way (g01, g03),",
+    "a measured number that invites invention (g02), two concepts that are easy to",
+    "conflate (g04), an error branch that is easy to state backwards (g05), and a",
+    "second out-of-corpus question that sounds far more answerable than the base set's",
+    "kubernetes/lambda pair (g06). Categories stay inside the seven the base set uses,",
+    "so the per-category tables in Parts 2 and 3 line up row for row.",
+    "",
+    "`rerank_off_subset` is the subset the reranking-OFF run scores. Judged metrics",
+    "cost an LLM call each, so the second run is a subset by design (assignment Part 3)",
+    "— but a RANDOM subset can drop a whole failure category, and the per-category",
+    "breakdown is the point. So it is stratified: two cases from each of the seven",
+    "categories, 14 in all, keeping every category present on both sides of the",
+    "comparison. Within a category the two are the lowest-numbered, so the choice is",
+    "not a post-hoc pick of the cases that made reranking look good."
+  ],
+  "extends": "cases.json",
+  "rerank_off_subset": [
+    "q01_impact_scope", "q02_prune_cascade",
+    "q03_rrf_acronym", "q04_uid_acronym",
+    "q05_loop_forever", "q06_risky_action_human",
+    "q07_what_tools", "q22_operating_rules",
+    "q08_why_json_graph", "q14_why_decisions_separate",
+    "q09_visibility_enforced", "q19_langchain_when",
+    "q10_kubernetes_oob", "q23_lambda_oob"
+  ],
+  "cases": [
+    {
+      "case_id": "g01_overlay_stays_sqlite",
+      "query": "we run Postgres now, so should the sqlite overlay move into it",
+      "category": "why-question",
+      "golden_answer": "No. The Postgres index is derived data that may be dropped and rebuilt, while the overlay is authored knowledge, so consolidating them would put durable records in a store the project treats as disposable. The overlay stays in sqlite under store/.",
+      "anchors": [
+        {"kind": "decision", "ref": "62"}
+      ]
+    },
+    {
+      "case_id": "g02_rerank_latency",
+      "query": "how much slower is a search with reranking turned on",
+      "category": "lexical-vs-semantic",
+      "golden_answer": "About 4 seconds against roughly 60 milliseconds without it, a factor of about 60. Cached it drops to 60-140ms, which is why the eval harness can re-run the sweep for free while a live agent turn cannot.",
+      "anchors": [
+        {"kind": "component", "ref": "retrieval.rerank"}
+      ]
+    },
+    {
+      "case_id": "g03_which_tools_gated",
+      "query": "which tools need a human to approve them and which do not",
+      "category": "near-duplicate",
+      "golden_answer": "Only the irreversible one is gated: prune_graph_node proceeds solely on explicit human confirmation. The read tools, the append-only decision log and the scan stay ungated, because reversibility decides the gate rather than importance.",
+      "anchors": [
+        {"kind": "component", "ref": "tools.graph_write", "symbol": "prune_graph_node"},
+        {"kind": "decision", "ref": "3"}
+      ]
+    },
+    {
+      "case_id": "g04_stale_vs_orphan",
+      "query": "what is the difference between a stale summary card and an orphaned decision",
+      "category": "lexical-vs-semantic",
+      "golden_answer": "A stale card is a summary whose source file changed, so the card describes code that has moved on and should be regenerated. An orphan is a record whose symbol_uid no longer resolves at all, which is surfaced for review and never deleted. Different signals with different fixes.",
+      "anchors": [
+        {"kind": "component", "ref": "overlay.summarize"},
+        {"kind": "component", "ref": "triggers.orphan_watch"},
+        {"kind": "decision", "ref": "57"}
+      ]
+    },
+    {
+      "case_id": "g05_embeddings_down",
+      "query": "what happens to search if the embeddings endpoint is unreachable",
+      "category": "multi-hop",
+      "golden_answer": "The dense arm is dropped and the search degrades to lexical-only rather than failing: BM25 still runs over the same corpus and the hit records that it had no dense score, so a run that quietly lost an arm is visible in the trace instead of looking like a bad day for the retriever.",
+      "anchors": [
+        {"kind": "component", "ref": "retrieval.search"},
+        {"kind": "component", "ref": "retrieval.embed"}
+      ]
+    },
+    {
+      "case_id": "g06_oncall_oob",
+      "query": "who is on call for this service overnight and what is the escalation path",
+      "category": "out-of-corpus",
+      "golden_answer": "",
+      "anchors": []
+    }
+  ]
+}

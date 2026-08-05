@@ -1452,35 +1452,69 @@ happened.
 
 ---
 
-## Phase 14D — Generation metrics, Part 3 (Dias)
+## Phase 14D — Generation metrics, Part 3 (Dias) — **DONE**
 
 ### T14.14 — Judged generation metrics
 
-- [ ] `eval/generation_metrics.py` — ≥3 of faithfulness, answer relevance, context precision,
-      context recall. Hand-rolled on `monitor/judge.py`'s pattern: named values, never a 1-10
-      score (#37, #61). Judge on `STRONG` while answers are generated on `CHEAP`.
-- [ ] `eval/gen_cases.json` — ≥20 cases tagged across ≥5 failure categories, one out-of-corpus.
-      May extend Alejandro's `cases.json` rather than duplicating it; say which.
-- [ ] Cache judge responses. Run both with and without reranking; the rerank-off run may use a
-      **subset** — say which subset and why.
-- [ ] **Acknowledge judge bias** (position, verbosity, self-preference, judge-model mismatch) and
-      say what was done about it, or why it did not bite here. Randomise candidate order; cap
-      answer length in the prompt.
-- [ ] `tests/test_eval_scorers.py` — unit tests for the scorers using a couple of eval cases as
-      fixtures. A scorer nobody tested is a number nobody should trust. ≥1 online test (§8).
+- [x] `eval/generation_metrics.py` — **all four**: faithfulness, answer relevance, context
+      precision, context recall. Hand-rolled on `monitor/judge.py`'s pattern: named values, never
+      a 1-10 score (#37, #61, #68). Judge on `STRONG`, answers generated on `CHEAP`.
+      Faithfulness and context recall are **claim-level**, and every `supported`/`present` label
+      must carry a quote the harness finds in the passages or the **code downgrades it** — the one
+      judged assertion that is mechanically falsifiable.
+- [x] A fifth metric the assignment does not name: **`abstention`** (`abstains`/`hedges`/
+      `answers_anyway`), run on out-of-corpus cases *instead of* the four and reported separately.
+      Scoring "did it answer" on a question the corpus cannot answer would rank the only correct
+      behaviour worst (#67 one level up). It also costs one judged call there instead of four.
+- [x] `eval/answer.py` — the answer under test (retriever order, not repacked; ~120-word cap;
+      told it may refuse) and `eval/cache.py` — one sqlite file of answers + verdicts, so a
+      judged run replays instead of re-sampling.
+- [x] `eval/gen_cases.json` — **30 cases**: it **extends** Alejandro's `cases.json` (24) with six
+      generation-specific ones rather than duplicating it, so Parts 2 and 3 score the same
+      questions and Part 4 can compare them (#69). 7 categories, 3 out-of-corpus.
+- [x] Judge responses cached. Both configurations run; the rerank-off run uses the **stratified
+      14-case subset declared in `gen_cases.json`** — two per category, so no category can drop
+      out of the comparison, and declared in the data file so it is visibly not a post-hoc pick.
+- [x] **Judge bias addressed and reported**: `CHEAP` answers / `STRONG` judge (self-preference —
+      reduced, not eliminated, and said so); deterministically shuffled passage order in
+      `context_precision` with the verdicts mapped back (position); a 120-word cap *and*
+      claim-ratio metrics (verbosity), with the measured mean (73 words) in the README; and the
+      quote check for unbacked grounding. What was **not** done is listed too: one judge, one
+      prompt, one sample, no human-calibrated subset.
+- [x] `tests/test_eval_scorers.py` — **32 offline tests + 1 online** (§8). Two real eval cases as
+      fixtures; the offline body pins what belongs to the *code* — the quote downgrade, the
+      vocabularies, the rationale requirement, the de-shuffle, undefined-not-zero, and the whole
+      matrix over a fake retriever.
+
+**Two findings worth carrying into any later judged work:**
+
+- [x] **A reasoning judge's `max_output_tokens` bounds reasoning *and* reply.** The first live run
+      returned `reasoning_tokens == cap` with an empty body on 2 of the first 8 verdicts. They came
+      back **ungradeable rather than as low scores** — the branch working — but a cap sized for the
+      JSON is a cap sized wrong. Caps are now set from measured reasoning cost; final run: 0
+      ungradeable.
+- [x] **Persist before rendering.** The first full run made and paid for every call, then died in
+      `print()` on a cp1251 console (`→` is not in that codepage), *before* writing its JSON. Only
+      the cache saved it. `main()` now writes results first and renders second.
 
 ### T14.14b — README, Part 3 (Dias)
 
-**Every phase writes its own section of the report** — see T14.12b for why.
-
-- [ ] Fill in README § "Part 3 — Generation metrics", replacing the placeholder: the metric
-      scores **with interpretation**, not bare numbers; reranking on vs. off; and the
-      per-failure-category breakdown, since an average over a mixed set hides which category the
-      system is actually bad at.
-- [ ] Write the judge-bias paragraph in the README itself, not only in the code: which biases
-      (position, verbosity, self-preference, judge-model mismatch) were addressed how, and which
-      were judged not to bite here and why.
-- [ ] Say which subset the reranking-off run used, and why.
+- [x] README § "Part 3 — Generation metrics" written: the four metrics with interpretation, the
+      reranking on/off comparison, the per-category breakdown, three cases read individually
+      rather than averaged, the out-of-corpus result, judge bias, the subset, and what the run cost.
+- [x] **The on/off comparison is reported like-for-like.** The first version of the table averaged
+      27 cases against a different 12 — the reranking-off subset — which is not a comparison. The
+      harness now also aggregates over the **cases both runs scored** (`common_view`), and the
+      README leads with that; the full-set column stays as the headline quality figure.
+- [x] Judge-bias paragraph in the README, not only in code.
+- [x] Says which subset the reranking-off run used and why.
+- [x] Headline results: context precision is where reranking pays (**+0.183** like-for-like,
+      improving in all six categories) while faithfulness moves +0.030 and answer relevance not at
+      all — **a large retrieval win became a small answer win**, partly because for **5 of the 14**
+      subset cases reranking did not change the top-5 context at all. `near-duplicate` is worst in
+      both halves of the harness (context recall **0.103**); `multi-hop` is the one category
+      reranking *hurt*. All 3 out-of-corpus cases **abstained**. Measured cost: **$3.41** over 186
+      calls, 278× the cost of generating the answers being judged.
 
 **Depends on:** Phase 14C's tables looking sane. Starting before that risks paying for judged
 metrics over a retriever with a known bug.
@@ -1581,3 +1615,26 @@ and always parses, so only a live call reaches them.
       argument on the test.
       `tests/test_smoke_hw1.py` is deliberately NOT on this list — §8 exempts the pre-refactor
       suites, which keep validating the old path until it is retired.
+
+### HW5
+
+Found while building Phase 14D. **`overlay/summarize.py` is Berat's file — filed, not fixed**
+(CLAUDE.md §1).
+
+- [ ] **The summariser silently produces no cards for a large module.** Re-scanning for Part 3
+      gave 99 nodes; `python -m overlay.summarize` reported `written=218 skipped=70 failed=2`,
+      and the two failures are exactly the two largest sources in the tree —
+      `overlay/db.py` (25,586 bytes) and `tests/test_eval_scorers.py` (21,667 bytes). Everything
+      smaller succeeded, so the boundary is size, not content: `summarize_node` asks for the
+      whole card set in one `CHEAP` call capped at 2000 output tokens, and on a file that large
+      the reply is truncated, `_parse` returns `None`, and the node is counted as a failure and
+      skipped. **The visible cost is a hole in the corpus**: `Module:overlay.db` — the module
+      that owns `node_summaries`, `upsert_node_summary` and `stale_summaries` — has *no component
+      card at all*, so no query about the overlay schema can retrieve it. Found because an eval
+      anchor pointed at `overlay.db::stale_summaries` and resolved to nothing; the anchor was
+      moved to modules that do have cards (`overlay.summarize`, `triggers.orphan_watch`), which
+      is a workaround in the eval set and not a fix for the corpus. Options: chunk the source and
+      summarise per symbol group; raise the cap and retry once on a truncated reply; or emit a
+      module card from the signature list even when the symbol pass fails, so a large module is
+      degraded rather than absent. Worth noting the failure is *counted* (`failed=2`) but not
+      *named* — the run prints no node ids, which is why it went unnoticed through Phase 14B.
