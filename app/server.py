@@ -96,6 +96,21 @@ class EventLog:
         with self._lock:
             return [e for e in self._events if e["seq"] > seq]
 
+    def already_showed_user(self, text: str) -> bool:
+        """Did the live tailer already print this exact inbound message?
+
+        Both sources carry the human's message: stdout the moment it arrives,
+        the run record when the turn ends. The live one is the useful one — it
+        is what makes the panel move while the agent thinks — so the record's
+        copy is suppressed rather than printed a second time under the answer
+        it produced.
+        """
+        with self._lock:
+            for event in reversed(self._events):
+                if event["kind"] == "user":
+                    return event["text"] == text
+        return False
+
 
 LOG = EventLog()
 
@@ -214,29 +229,59 @@ def status_payload() -> dict[str, Any]:
 
 # Only lines that mean something to a viewer. Everything else in the stream is
 # framework noise, and a panel that shows everything shows nothing.
+#
+# The two sources overlap, and where they do this one yields: the run record
+# carries the same turn with the tool calls, their branches and the planner's
+# actual `impacted` list, so replaying stdout's coarser version of it prints
+# every turn twice. Patterns mapped to `DROP` are the ones runs.jsonl says
+# better. What stays is either LIVE-ONLY — the turn is starting, a gate is
+# waiting; things a viewer needs before the run record exists — or STDOUT-ONLY,
+# which is the planner's retrieval and the seed/hop cap.
+DROP = "drop"
+
 _STDOUT_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"^\[service\] (.+)$"), "boot", r"\1"),
     (re.compile(r"^\[telegram\] (.+)$"), "note", r"telegram: \1"),
+    # Live: the message lands here seconds before the run record exists.
     (re.compile(r"^\[(telegram|github|heartbeat)\] (.+?) — (.+)$"), "user", r"\3"),
-    (re.compile(r"^\s*\[TOOLS\] offered: (.+)$"), "agent", r"tools offered: \1"),
     (re.compile(r"^\s*\[QUEUE\] (.+)$"), "note", r"queue: \1"),
     (re.compile(r"^\s*\[SILENT\] (.+)$"), "note", r"stayed silent: \1"),
-    (re.compile(r"^\s*\[STOPPED\] (.+)$"), "note", r"loop stopped: \1"),
+    # Live and load-bearing: a gate is a question somebody has to answer NOW.
     (re.compile(r"^\s*\[gate->(.+?)\] (.+)$"), "gate", r"approval asked: \2"),
     (re.compile(r"^\s*\[GATE\] (.+)$"), "gate", r"approval asked: \1"),
-    (re.compile(r"^\[PLANNER\] (.+)$"), "plan", r"planner: \1"),
+    # Stdout-only. A real `search_corpus` call with real args and real results —
+    # made by Python rather than chosen by the model (#66), which is why it
+    # reaches no run_agent trace. Rendered in the `tool` lane because that is
+    # what it is; the detail names who decided to make it, so the panel shows
+    # the step without claiming the model picked it.
+    (re.compile(r"^\s*\[retrieval\] (.+)$"), "tool", r"\1"),
+    # Stdout-only: the seed and the hop cap. `impacted=N` is the count the plan
+    # envelope later itemises, and the cap is #34's "visible in the trace".
     (re.compile(r"^\[planner\] (.+)$"), "plan", r"planner: \1"),
-    (re.compile(r"^\[EXECUTOR\] (.+)$"), "exec", r"executor: \1"),
+    # Live: the handover beat. The executor's own tool calls arrive with the run
+    # record, so only the "starting" line earns a row.
+    (re.compile(r"^\[EXECUTOR\] implementing\s*$"), "exec", "handing over to the executor"),
     (re.compile(r"^\s*\[ERROR\] (.+)$"), "error", r"\1"),
     (re.compile(r"^\s*\[silence\] (.+)$"), "note", r"silence policy: \1"),
+
+    # --- said better by the run record ---
+    (re.compile(r"^\s*\[TOOLS\] offered: "), DROP, ""),   # a registry, not a step
+    (re.compile(r"^\s*\[STOPPED\] "), DROP, ""),          # -> run.stopped
+    (re.compile(r"^\[PLANNER\] "), DROP, ""),             # -> the plan envelope
+    (re.compile(r"^\[EXECUTOR\] "), DROP, ""),            # -> the executor envelope
 ]
 
 
 def classify_stdout(line: str) -> Optional[tuple[str, str]]:
+    """`(kind, text)` for a line worth showing; None for noise and for duplicates.
+
+    First match wins, so the specific patterns above sit ahead of the broad
+    `DROP` prefixes they carve exceptions out of.
+    """
     for pattern, kind, template in _STDOUT_PATTERNS:
         match = pattern.match(line.rstrip())
         if match:
-            return kind, match.expand(template)
+            return None if kind is DROP else (kind, match.expand(template))
     return None
 
 
@@ -262,7 +307,13 @@ def tail_service_log(stop: threading.Event) -> None:
                         hit = classify_stdout(line)
                         if hit:
                             kind, text = hit
-                            LOG.add(kind, text,
+                            # `call -> result` renders in the same two-part shape
+                            # as a tool row out of runs.jsonl, so a line from
+                            # stdout and one from the run record look alike.
+                            text, _, detail = text.partition(" -> ")
+                            if kind == "tool" and detail:
+                                detail += "   [code-owned: planner seed retrieval]"
+                            LOG.add(kind, text, detail=detail,
                                     section="boot" if kind == "boot" else "chat")
         except OSError:
             pass
@@ -355,9 +406,10 @@ def expand_run(run: dict[str, Any]) -> None:
     request = (run.get("request") or "").strip()
     envelopes = run.get("envelopes") or []
 
-    if request:
+    if request and not LOG.already_showed_user(request):
         LOG.add("user", request, detail=f"user={user}  run={run.get('run_id')}")
-    LOG.add("agent", f"picked up by {agent}", detail=f"thread={run.get('thread_id')}")
+    LOG.add("agent", f"picked up by {agent}",
+            detail=f"user={user}  thread={run.get('thread_id')}  run={run.get('run_id')}")
 
     for entry in envelopes:
         if (entry.get("agent") or "") == "planner":

@@ -114,7 +114,8 @@ def run_planner(
         seed = component_hint.strip()
         steps = [{"path": _component_to_path(seed), "intent": request.strip()}]
     else:
-        seed, steps, failure = _propose_seed_and_steps(request, model=model)
+        seed, steps, failure = _propose_seed_and_steps(request, model=model,
+                                                       verbose=verbose)
         if failure is not None:
             return failure
 
@@ -212,7 +213,8 @@ _PROPOSE_INSTRUCTION = (
 )
 
 
-def _retrieve_seed_candidates(request: str, *, k: int = 5) -> list[str]:
+def _retrieve_seed_candidates(request: str, *, k: int = 5,
+                              verbose: bool = True) -> list[str]:
     """Component seeds the corpus surfaces for this request, best first.
 
     This is the T14.13 fix for the HW4-filed bug: the model was asked to name a
@@ -228,13 +230,28 @@ def _retrieve_seed_candidates(request: str, *, k: int = 5) -> list[str]:
     empty, so the planner falls back to the pre-existing blind prompt and every
     offline test keeps passing. Imported lazily so `agents.planner` does not take
     a hard `psycopg` dependency at import time.
+
+    **Traced.** This call is real retrieval — the same `search_corpus` the loop
+    offers, same args, same results — but it is made by Python rather than chosen
+    by the model, so it appears in no `run_agent` trace and, until now, nowhere
+    else either. That made the one retrieval the change pipeline actually depends
+    on the only one nobody could see. It prints a `[retrieval]` line for the same
+    reason `run_planner` prints its seed and cap (#34): a step the code owns still
+    has to be visible in the trace, or "the retriever surfaced nothing" and "the
+    retriever was never asked" look identical when a plan comes out wrong.
     """
     try:
         from tools.retrieval_tools import search_corpus
     except Exception:  # noqa: BLE001 — a missing retrieval layer is a fallback, not a fault
+        if verbose:
+            print("  [retrieval] search_corpus unavailable — falling back to the blind prompt")
         return []
     result = search_corpus(request, k=k, source="components")
     if not isinstance(result, dict) or result.get("error"):
+        if verbose:
+            print(f"  [retrieval] search_corpus(query={request[:60]!r}, k={k}, "
+                  f"source=components) -> error: "
+                  f"{result.get('error') if isinstance(result, dict) else 'malformed'}")
         return []
     seeds: list[str] = []
     for row in result.get("results", []):
@@ -244,11 +261,19 @@ def _retrieve_seed_candidates(request: str, *, k: int = 5) -> list[str]:
         dotted = uid.split(":", 1)[-1]          # "Module:tools.decisions" -> "tools.decisions"
         if dotted and dotted not in seeds:
             seeds.append(dotted)
+    if verbose:
+        # Reports what actually ranked, including whether the reranker ran — the
+        # same thing `search_corpus`'s `reranked` field exists to stop the trace
+        # lying about (#60).
+        print(f"  [retrieval] search_corpus(query={request[:60]!r}, k={k}, "
+              f"source=components) -> {result.get('count', len(seeds))} passages"
+              f"{', reranked' if result.get('reranked') else ', fused'}"
+              f" | candidates: {', '.join(seeds[:4]) or 'none'}")
     return seeds
 
 
 def _propose_seed_and_steps(
-    request: str, *, model: str
+    request: str, *, model: str, verbose: bool = True
 ) -> tuple[str, list[dict], Optional[AgentResult]]:
     """One model round trip: free-form request -> (seed, steps).
 
@@ -261,7 +286,7 @@ def _propose_seed_and_steps(
     no seed the top-ranked candidate is used, so a retrievable request no longer
     fails on an empty seed the way it did before.
     """
-    candidates = _retrieve_seed_candidates(request)
+    candidates = _retrieve_seed_candidates(request, verbose=verbose)
     if candidates:
         listing = "\n".join(f"  - {c}" for c in candidates)
         instruction = (

@@ -36,6 +36,14 @@ coarse; the run record is exact but arrives at the end. The panel merges both,
 which is why a turn shows a live "message received" line first and the tool-by-tool
 detail a few seconds later.
 
+Where they overlap, **stdout yields** — the run record says the same thing with
+the tool calls, their branches and the planner's real `impacted` list, so
+`[TOOLS] offered`, `[STOPPED]`, `[PLANNER] ok — …` and `[EXECUTOR]`'s closing
+line are dropped rather than printed twice (see `DROP` in `server.py`). The
+inbound message is deduped the same way: the live copy wins. What survives from
+stdout is what is live-only (the message arriving, a gate waiting) or
+stdout-only (the planner's retrieval, and its seed + hop cap).
+
 The run record is replayed slightly out of file order on purpose: a `/change` run
 shares one `RunLog` between both agents, so the executor's tool calls sit in
 `steps` while the planner's envelope — the plan those calls implement — sits later
@@ -60,10 +68,13 @@ scores, and whether the reranker or the fused order produced them. It is a tool
 the model *chooses* — a question that names a component outright will go straight
 to `query_component_graph` instead, and that is correct (#60).
 
-One place it still will not show: the `/change` path uses retrieval inside
-`agents/planner.py::_retrieve_seed_candidates` as a direct Python call, not a
-model-chosen tool call (#66), so it lands in no trace. What the panel shows there
-is the *result* of it — the planner's `impact_scope` line.
+The `/change` path retrieves too, inside
+`agents/planner.py::_retrieve_seed_candidates`. That one is a direct Python call,
+not a model-chosen tool call (#66), so it reaches no `run_agent` trace — it is
+picked up from the `[retrieval]` line the planner prints (#72) and rendered in
+the same tool lane, because it is the same `search_corpus` with the same args and
+the same results. Its detail is marked `[code-owned: planner seed retrieval]`, so
+the row shows the step without implying the model chose to make it.
 
 Ask a question phrased the way people phrase them ("which bit handles the
 approval prompt", "why is the graph a JSON file") to see the retrieval arm work.
