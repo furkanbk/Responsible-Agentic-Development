@@ -29,6 +29,8 @@ from typing import Any, Callable, Optional
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
+from tracing.spans import agent_span, set_outputs
+
 from .context import AssembledContext
 from .core import CHEAP
 from .graph import build_graph
@@ -64,6 +66,7 @@ def run_agent(
     system: Optional[str] = DEFAULT_SYSTEM,
     context: Optional[AssembledContext] = None,
     run_log: Optional[RunLog] = None,
+    temperature: Optional[float] = None,
 ) -> dict[str, Any]:
     """Drive the agent loop over `schemas`/`registry` until a stopping condition.
 
@@ -91,11 +94,56 @@ def run_agent(
                 grades these after the fact, so the log records what was
                 ASSEMBLED as well as what was done — "the agent ignored a rule"
                 and "the rule was never in context" must not look alike.
+      temperature  passed through to the chat model. `None` (the default) sends
+                no temperature at all — the provider default, which is what every
+                run before HW6 used. The agent-eval suite raises it deliberately,
+                because three runs at a pinned 0.0 are identical and cannot show
+                a scenario as flaky (HW6, decision #92).
 
     Returns {"answer", "steps", "trace", "stopped"}. `trace` is a list of dicts,
     one per executed/declined tool call, each tagged with its branch
     ("ok" | "error" | "declined" | "invalid_args").
+
+    HW6 (T15.3): the whole call is wrapped in the run's ROOT span. Everything
+    below — the LLM calls, each tool dispatch, any retrieval — nests inside it,
+    which is what makes one invocation one trace.
     """
+    with agent_span(
+        "agent.run",
+        request=user_msg,
+        run_id=run_log.run_id if run_log is not None else None,
+        agent=run_log.agent if run_log is not None else None,
+        user_id=run_log.user_id if run_log is not None else None,
+    ) as span:
+        if span is not None and run_log is not None:
+            run_log.trace_id = getattr(span, "trace_id", None)
+        result = _run(
+            user_msg, schemas, registry, approve, model, max_steps,
+            verbose, system, context, run_log, temperature,
+        )
+        set_outputs(span, {
+            "answer": result["answer"],
+            "stopped": result["stopped"],
+            "steps": result["steps"],
+        })
+        return result
+
+
+def _run(
+    user_msg: str,
+    schemas: list[dict[str, Any]],
+    registry: dict[str, Callable],
+    approve: Optional[Callable[[str, dict], bool]],
+    model: str,
+    max_steps: int,
+    verbose: bool,
+    system: Optional[str],
+    context: Optional[AssembledContext],
+    run_log: Optional[RunLog],
+    temperature: Optional[float],
+) -> dict[str, Any]:
+    """The loop itself. Split out only so the root span can wrap it without
+    indenting the whole function — `run_agent`'s contract is unchanged."""
     if context is not None:
         system = context.instructions
         input_items = list(context.input_items(user_msg))
@@ -122,7 +170,9 @@ def run_agent(
     if verbose:
         print(f"  [TOOLS] offered: {[s['name'] for s in schemas]}")
 
-    graph = build_graph(tools, schema_by_name, registry, approve, model, max_steps)
+    graph = build_graph(
+        tools, schema_by_name, registry, approve, model, max_steps, temperature
+    )
     initial_state = {
         "messages": messages,
         "trace": [],

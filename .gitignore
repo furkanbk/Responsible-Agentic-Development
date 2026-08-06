@@ -15,6 +15,12 @@ store/runs/
 # it lives one level down, in store/cache/.
 store/cache/
 
+# HW6 tracing: the MLflow backend. `store/mlflow.db` is already covered by
+# `store/*.db` above; these two catch mlflow's own directories if someone points
+# RADF_MLFLOW_URI at a file store instead.
+mlruns/
+mlartifacts/
+
 # Notebook demo artifacts from the guidance scaffold
 watchlist.json
 watchlist_b.json

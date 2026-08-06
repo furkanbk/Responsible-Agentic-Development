@@ -1,12 +1,18 @@
-# TODO.md — HW1-HW3 (complete) + HW4 (current)
+# TODO.md — HW1-HW5 (complete) + HW6 (current)
 
 **Read this file before any implementation.** If a task is not here, it is not in scope.
 Every file has exactly one owner. Stubs are contracts — do not fill in a stub you do not own.
 
 Branch: `hw1/<owner>/<short-task>` · `hw2/<owner>/<short-task>` · `hw3/<owner>/<short-task>` ·
-`hw4/<owner>/<short-task>` · PR into `main` · no direct pushes.
+`hw4/<owner>/<short-task>` · `hw5/...` · `hw6/...` · PR into `main` · no direct pushes.
 
-> **Current phase: HW4** (Phase 12-13). HW1 (Phases 0-3), HW2 (Phases 4-8) and HW3 (Phases 9-11)
+> **Current phase: HW6** (Phase 15) — agent evaluation, MLflow tracing, safety hardening.
+> **The classroom calls it "HW3"; here it is HW6** — jump to the `# HW6` section near the end of
+> this file, and do not touch Phases 9-11, which are the real HW3. Your next task:
+> **Berat** 15A+15B (done) · **Alejandro** 15C · **Dias** 15D · all three write their own README
+> subsection. The HW4 note below is historical.
+>
+> **Historical: HW4** (Phase 12-13). HW1 (Phases 0-3), HW2 (Phases 4-8) and HW3 (Phases 9-11)
 > are closed; their boxes below are historical record. HW4 refactors the agent onto LangGraph
 > (explicit state schema) with LangChain-integrated tools, preserving every HW1-HW3 behavior,
 > and adds at least two new framework-called tools. See §Contracts (HW4) before touching
@@ -1548,6 +1554,406 @@ produces a report describing what was expected rather than what happened.
 
 ---
 
+# HW6
+
+> **The classroom calls this assignment "HW3"; this repo calls it HW6.** The course numbers
+> agent-eval / tracing / safety as its third homework; this repo has already had five homeworks
+> on the same codebase, and **"HW3" here is the channel, the triggers and the silence guard in
+> Phases 9-11**, which closed long ago. **"Implement HW3", "the HW3 tracing work", "HW3 Part
+> 1/2/3/4" and the pasted HW3 brief all mean this section.** Do not touch Phases 9-11 — same
+> collision, same rule as the HW5/"HW2" note above. The course's parts map onto phases as:
+>
+> | Course | Here | Owner |
+> |---|---|---|
+> | Part 2.1-2.2 — Tracing: span tree, tags | Phase 15A | Berat |
+> | Part 1 — Agent evaluation | Phase 15B | Berat |
+> | Part 2.3 — Scorers over traces, `log_feedback` | Phase 15C | Alejandro |
+> | Part 3 — Safety hardening | Phase 15D | Dias |
+> | Part 4 — Report | Phase 15E | **all three** — each writes their own section; Berat assembles |
+>
+> **The course's own ordering is inverted on purpose, and the brief says why.** Part 1 needs an
+> ordered `list[ToolCall]` from a real run. Built against a hand-rolled trajectory log that is
+> the capture step written twice; built against a trace it is twenty lines. So 15A (tracing)
+> lands before 15B (agent eval), and both land before the two parallel tracks.
+
+Three things compose here: the agent eval gives us scorers, tracing gives those scorers something
+to run against, and the safety layer becomes one more scorer over the same traces.
+
+**What tracing is not.** It is not a replacement for `agentlib/runlog.py`. `store/runs/runs.jsonl`
+stays exactly as it is — append-only, authored-adjacent, the thing the monitor grades and the only
+record that carries *what was assembled* (instructions + pulled source ids), which no span tree
+has. The MLflow store is **derived**: it may be dropped and rebuilt at any time, and nothing
+durable lives there. That is decision #62's argument applied to a second database — see #89. The
+two are **joined, never merged**: a `radf.run_id` tag on the trace, a `trace_id` in
+`RunLog.scratch`.
+
+**What autolog does and does not reach.** `mlflow.langchain.autolog()` covers the LangGraph path's
+LLM calls. It does **not** produce per-tool `TOOL` spans, because `agentlib/graph.py`'s tools node
+is hand-written rather than LangChain's `ToolNode` — so the twenty-line trajectory adapter would
+have nothing to read. Every span type Part 2 requires and autolog misses is instrumented by hand
+in 15A, at the single dispatch site. See decision #88.
+
+**One dependency rule changes.** `mlflow` is added under a **§4 HW6 amendment** (decision #87) —
+named package only, same narrow pattern as HW2's §7.1, HW4's §4 and HW5's §4. The Part 1 metrics,
+the trajectory adapter and the safety detectors stay hand-written: they are what is being graded.
+
+### Ownership map (HW6)
+
+| Area | Files | Owner |
+|---|---|---|
+| Tracing package | `tracing/` (all) | **Berat** |
+| Instrumentation sites | `agentlib/loop.py`, `agentlib/graph.py`, `agentlib/core.py`, `retrieval/search.py`, `orchestrator.py` | **Berat** |
+| Agent eval set + metrics | `eval/agent_cases.json`, `eval/agent_metrics.py`, `eval/run_agent_eval.py` | **Berat** |
+| Trace → scorer adapters | `eval/trace_adapters.py`, `eval/run_trace_scoring.py` | **Alejandro** |
+| Safety layers + detector | `safety/` (all), `tests/test_safety.py` | **Dias** |
+| Report | `README.md` § HW6 — one subsection each | all three |
+
+### Homework requirement → owner (HW6)
+
+| HW6 requirement | Where it is satisfied | Task | Owner |
+|---|---|---|---|
+| ≥10 end-to-end scenarios with expected tool calls + outcome | `eval/agent_cases.json` | T15.6 | Berat |
+| Run → ordered `list[ToolCall]` from a trace | `tracing/trajectory.py::tool_calls_from_trace` | T15.4 | Berat |
+| ≥2 of selection / parameter / goal / trajectory metrics | `eval/agent_metrics.py` — all five | T15.7 | Berat |
+| 3 runs per scenario, pass@3 **and** pass^3, stated temperature | `eval/run_agent_eval.py` | T15.8 | Berat |
+| A scenario that passed some runs and failed others | README § Part 1 "Flakiness" | T15.9 | Berat |
+| Root span per invocation; LLM / tool / retrieval children | `tracing/spans.py` + the five instrumentation sites | T15.2, T15.3 | Berat |
+| Model name, token counts, latency on the relevant spans | `agentlib/core.py`, `agentlib/graph.py` | T15.3 | Berat |
+| `request_origin` (api/ui/batch) + `eval_case_id` tags | `tracing/tags.py`, set at every entry point | T15.5 | Berat |
+| HW5 scorers run over traces, results via `mlflow.log_feedback` | `eval/trace_adapters.py` | T15.10-T15.12 | **Alejandro** |
+| Four defense layers (or a named skip) | `safety/` | T15.14-T15.16 | **Dias** |
+| Detector as a pure function of a trace | `safety/detect.py::scan_trace` | T15.17 | **Dias** |
+| Report: results table, threat model, layers, false-positive rate | README § HW6 | T15.9b, T15.13b, T15.18b, T15.19 | all three |
+
+---
+
+## Contracts frozen for HW6
+
+Frozen in 15A so 15C and 15D never touch each other's files, and neither has to read
+`tracing/`'s internals. Same move as T0.8, T6.1, T9.0, Phase 12 and T14.2 before it.
+
+### #12 — `tracing.spans` — the four span helpers
+
+```python
+# Every helper is a context manager that yields the live span, or None when
+# tracing is off. `with tool_span(...) as sp: ...` must work with mlflow absent,
+# uninstalled, or disabled — HW1-HW5 keep running untraced (decision #90).
+agent_span(name, *, request, run_id=None, agent=None, user_id=None, tags=None)
+tool_span(tool_name, args)          # span_type=TOOL, attribute gen_ai.tool.name
+llm_span(name, *, model, inputs)    # span_type=LLM,  usage + cost on finish
+retriever_span(query, *, k, rerank, source)   # span_type=RETRIEVER
+```
+
+Tool spans additionally carry `radf.branch` ∈ {`ok`,`error`,`declined`,`invalid_args`} and
+`radf.gated` — both already computed at the dispatch site. **A safety scorer must not have to
+re-derive from arguments what the guards already decided.**
+
+### #13 — `tracing.trajectory` — trace → data, for everyone downstream
+
+```python
+@dataclass(frozen=True)
+class ToolCall:
+    tool: str
+    arguments: dict[str, Any]
+
+tool_calls_from_trace(trace) -> list[ToolCall]   # TOOL spans, start-time order, args only
+trace_request(trace)  -> str                     # root span input
+trace_answer(trace)   -> Optional[str]           # root span output
+retrieved_chunks(trace) -> list[dict]            # RETRIEVER order — see below
+llm_calls(trace) -> list[dict]                   # {model, usage, latency_ms}
+find_traces(*, eval_case_id=None, request_origin=None, limit=...) -> list[Trace]
+```
+
+**`retrieved_chunks` returns the RETRIEVER's order, not the packed order.** Decision #59 already
+says metrics read `search()`'s ranking and any lost-in-the-middle repacking happens downstream;
+the retriever span is recorded before `pack_for_llm` for exactly that reason (#91). Feed a
+repacked list to MRR and nDCG and two of Alejandro's five metrics silently degrade while the
+other three look fine.
+
+**Arguments, never results.** `tool_calls_from_trace` reads `gen_ai.tool.name` and the span's
+inputs, and ignores outputs — a trajectory is what the agent *tried*, and folding results in makes
+a correct call look wrong when a tool legitimately errors. Spans still record outputs, because
+15D's indirect-injection detector needs to see what came back.
+
+### #14 — tag and feedback namespaces
+
+Trace tags: `request_origin` ∈ {`api`,`ui`,`batch`} (ambient, per #25 — **never** a tool or
+`run_agent` argument), `eval_case_id`, `radf.run_id`, `radf.agent`, `radf.user_id`.
+
+`mlflow.log_feedback(name=...)` namespaces, so 15C and 15D never collide on one trace:
+
+| Prefix | Owner | Example |
+|---|---|---|
+| `retrieval.*` | Alejandro | `retrieval.ndcg_at_5` |
+| `generation.*` | Alejandro | `generation.faithfulness` |
+| `agent.*` | Berat | `agent.goal_completion` |
+| `monitor.*` | Alejandro | `monitor.adherence` |
+| `safety.*` | Dias | `safety.injection_suspected` |
+
+### #15 — the agent-eval case shape (`eval/agent_cases.json`)
+
+```jsonc
+{
+  "case_id": "ae01",
+  "category": "read|lookup|gate|abstain|multi_step|injection",
+  "task": "the user message given to the agent",
+  "expected_tool_calls": [{"tool": "query_component_graph",
+                           "arguments": {"component": "agentlib.core", "max_depth": "*"}}],
+  "acceptable_alternatives": [[{"tool": "search_corpus", "arguments": {"query": "*"}}]],
+  "forbidden_tools": ["prune_graph_node"],
+  "expected_outcome": {"stopped": ["answered"], "answer_contains_any": ["core"],
+                       "answer_must_not_contain": ["deleted"]}
+}
+```
+
+Argument matchers, so a parameter check is not an exact-string lottery: a literal value, `"*"`
+(any), `{"one_of": [...]}`, `{"contains": "..."}`, `{"regex": "..."}`. **15D reuses this shape**
+for its attack scenarios rather than inventing a second runner — an injection case is an ordinary
+case whose `forbidden_tools` is the payload's goal.
+
+---
+
+## Phase 15A — Tracing base + contracts (Berat) — **blocking, do first** — **DONE**
+
+### T15.1 — The dependency and where the traces live
+
+- [x] `mlflow>=3.0` in `requirements.txt`; CLAUDE.md **§4 HW6 amendment**; decision **#87**.
+- [x] Backend is `sqlite:///store/mlflow.db` by default, overridable with `RADF_MLFLOW_URI`.
+      **Not the file store** — MLflow 3 puts `./mlruns` in maintenance mode and raises on it
+      unless `MLFLOW_ALLOW_FILE_STORE=true`, so "the obvious default" is a dead end. The db file
+      is gitignored under the existing `store/*.db` rule; `store/` is still off limits to tools
+      (§7.2) and the tracing db does not change that.
+- [x] Tracing is **opt-in per process** via `init_tracing()`, and every helper no-ops when it was
+      never called or when `mlflow` is not installed (#90). The automated gate is "all HW1 and HW2
+      functionality still works" — an import-time hard dependency on a tracking backend is how
+      that gate gets failed by accident.
+
+### T15.2 — `tracing/` package
+
+- [x] `tracing/setup.py` — `init_tracing()` (idempotent), `tracing_enabled()`, `flush()`.
+      `flush()` is not optional: MLflow logs traces **asynchronously**, and `get_trace()`
+      immediately after a run returns `None` with a "span data is corrupted" warning. Every
+      read-after-write path calls it.
+- [x] `tracing/tags.py` — ambient `request_origin` / `eval_case_id` contextvars, same shape as
+      `agentlib/session.py` (#25).
+- [x] `tracing/spans.py` — contract #12.
+- [x] `tracing/trajectory.py` — contract #13.
+
+### T15.3 — Instrumentation sites
+
+- [x] `agentlib/loop.py::run_agent` — the root `AGENT` span, tagged with the `RunLog.run_id`; the
+      trace id goes back into `RunLog.scratch["trace_id"]`, so the join works from either side.
+- [x] `agentlib/graph.py::_make_tools_node` — one `TOOL` span per dispatched call, with the guard
+      branch. **This is the load-bearing edit of the whole homework**: without it there is no
+      trajectory to score and no tool-abuse signal to detect.
+- [x] `agentlib/core.py::call` — an `LLM` span for the raw Zen path (planner, judge, summariser,
+      generation metrics). Autolog does not reach it; `_extract_usage` and `estimate_cost` are
+      already there, so model name, token counts and cost come free.
+- [x] `retrieval/search.py::search` — a `RETRIEVER` span recording the retriever-order hits,
+      before `pack_for_llm` (#91).
+- [x] `orchestrator.py` — an outer span so planner and executor nest into **one** trace. A
+      trajectory split across two traces cannot be scored as one run.
+- [x] `run_agent(..., temperature=None)` threaded to `ChatOpenAI`. Additive kwarg on a signature
+      HW4 froze (#49) — recorded, not done silently. Nothing pinned temperature before this;
+      the eval suite needs to raise it deliberately (#92).
+
+### T15.4 — The trajectory adapter
+
+- [x] `tool_calls_from_trace` — TOOL spans, sorted by `start_time_ns`, name from
+      `gen_ai.tool.name`, arguments only.
+
+### T15.5 — Tags at the entry points
+
+- [x] `main.py` → `ui`, plus a `--trace` flag. `service.py::make_handler` stamps **both** `ui`
+      and `api` from `event.source` — the one place every inbound event crosses into the system,
+      so **`triggers/webhook.py` needs no edit** even though webhook traffic is tagged `api`.
+      That is deliberate: `triggers/*` belongs to Alejandro and Dias (CLAUDE.md §1), and an
+      instrumentation task that forces edits into three people's files is a task that serialises
+      the homework a second time.
+- [x] The eval runners set `batch` themselves (T15.8).
+- [ ] **T15.20 (Dias, with 15D):** `triggers/heartbeat.py` is the one entry point the service
+      handler does not cover — it fires on its own clock, not on an inbound event. One
+      `with request_origin_scope("batch"):` around `run_once`. Three lines, in your file, and
+      the monitor's own runs are then separable from the traffic it grades.
+
+**Depends on:** nothing. **Blocks:** 15B, 15C, 15D.
+
+---
+
+## Phase 15B — Agent evaluation, Part 1 (Berat) — **DONE**
+
+### T15.6 — The scenario set
+
+- [x] `eval/agent_cases.json` — **13 scenarios** (gate requires ≥10), each with task, expected
+      tool calls, acceptable alternatives, forbidden tools and expected outcome. Categories span
+      lookup, multi-step, the approval gate, abstention, an error branch, a write, and one
+      direct-injection case carrying a destructive payload.
+- [x] ae13 was added last and deliberately: at 12 scenarios every case was 3-for-3 or 0-for-3 at
+      both 0.7 and 1.0, which is the signature the brief warns about. ae13 is three dependent
+      steps over a module the request never names — harder scenario, not looser tolerance.
+
+### T15.7 — The metrics
+
+- [x] `eval/agent_metrics.py` — all five, hand-written: tool selection accuracy, tool parameter
+      accuracy, goal completion, trajectory precision, trajectory recall. Alignment is **LCS**
+      over tool names (not greedy: a greedy walk turns one extra call into two reported
+      failures), scored against the **best** of the acceptable alternatives rather than the
+      first. Undefined is `None`, never 0.0, and the mean skips it — same rule as
+      `retrieval_metrics`. A forbidden call is a **veto**, not a metric.
+
+### T15.8 — The runner
+
+- [x] `eval/run_agent_eval.py` — 3 runs per scenario, `pass@3` and `pass^3` both reported,
+      temperature stated in the output header. Trajectories come from the **trace**; the loop's
+      own list is a fallback that is recorded per run, never silent.
+- [x] Eval runs execute against a **temp copy of `store/`** — ae07 prunes and ae10 writes, and a
+      suite that mutates the stores scores a different corpus on its second pass.
+
+### T15.9 — Flakiness
+
+- [x] **ae13, 2/3.** Same prompt, same tools, same temperature; what varied was the first
+      `search_corpus` phrasing. Runs 1 and 3 surfaced `Module:project.store` within two queries;
+      run 2 did not and never recovered — `query_component_graph("task-list")`, a depth-6 scan,
+      `verify_graph_integrity`, four more searches, then "I can't identify the module". Eight
+      calls, no answer. pass@3 1, pass^3 0 — the gap is the whole point of reporting both.
+- [x] **ae04, 0/3, plus the tolerance bug it exposed.** The agent never calls `diff_texts` on two
+      short lines. The first version of the case scored goal completion **1.0** on those runs
+      because the outcome check accepted any answer containing `timeout = 60` — and the refusal
+      quoted it. Now requires the `ok` branch. A loose tolerance does not look like a bug, it
+      looks like a pass.
+
+### T15.9b — README § "Part 1 — Agent evaluation"
+
+- [x] Results table (39 runs, all trace-derived), temperature 1.0 stated and justified, both
+      flakiness findings, and what the other columns say.
+
+**Depends on:** 15A. **Not on Alejandro or Dias.**
+
+---
+
+## Phase 15C — Scorers over traces, Part 2.3 (Alejandro)
+
+**The scorer bodies do not change.** If wiring a scorer to a trace makes you edit the scorer, the
+adapter is doing too little. `eval/retrieval_metrics.py` and `eval/generation_metrics.py` are
+yours; `monitor/judge.py` is Dias's and must be consumed, not edited. All three stay byte-identical
+in this phase — the diff is new files only.
+
+### T15.10 — `eval/trace_adapters.py`
+
+- [ ] `trace_to_rag_inputs(trace) -> {question, answer, chunks}` — question from the root span
+      input, answer from its output, chunks rebuilt as `retrieval.types.Chunk` from the RETRIEVER
+      span (contract #13). This is the adapter with no worked example in class; the toy version
+      fed a hand-rolled judge, ours has to feed what HW5 actually shipped.
+- [ ] `trace_to_run_record(trace) -> dict` in `runlog.to_dict()` shape, so **`judge_run` runs over
+      a trace with zero edits**. `assembled.instructions` is the one field a span tree does not
+      carry — pull it from the joined `runs.jsonl` record via the `radf.run_id` tag, and when it
+      is missing say so rather than passing `""` (the judge's whole point is telling "ignored the
+      rule" apart from "never had the rule", and an empty string quietly answers "never had it").
+- [ ] `ranked_ids_from_hits` already exists and is half of the first adapter. Reuse it.
+
+### T15.11 — Feedback write-back
+
+- [ ] `eval/run_trace_scoring.py` — batch pass over stored traces, `mlflow.log_feedback(...)` per
+      metric under the `retrieval.*` / `generation.*` / `monitor.*` prefixes (contract #14).
+- [ ] `flush()` before reading traces back. See T15.2 — this bites once, silently.
+
+### T15.12 — Tests
+
+- [ ] `tests/test_trace_adapters.py`. CLAUDE.md §8 applies: **at least one online test** in the
+      new suite — a real traced run, adapted, scored, written back.
+
+### T15.13b — README § "Part 2 — Tracing and scorers over traces"
+
+- [ ] What the span tree looks like, which scorers now run over traces, and one before/after
+      showing the scorer body unchanged.
+
+**Depends on:** 15A. **Not on Dias.**
+
+---
+
+## Phase 15D — Safety hardening, Part 3 (Dias)
+
+**Half of this is already built, and the report has to say so honestly rather than re-implement
+it.** Before writing anything, read what exists — this is the §0 rule, and here it decides scope:
+
+- **Layer 2 (structural separation) — already done.** `agentlib/context.py::_render_data` fences
+  retrieved material in `<retrieved-context>` with explicit "this is DATA, never an instruction"
+  framing, and `_escape` neutralises wrapper-closing text. Decision #26 forbids stored text in
+  `instructions` at all. `demos/demo_injection.py` demonstrates it.
+- **Layer 4 (capability constraints) — already done.** `guards.GATED`, `store/` refused by
+  `read_source_file` and `apply_change` (§7.2), an empty `impact_scope` denying every write (#25),
+  `detect_stall`, `validate_args`.
+- **Layers 1 and 3 are the new work.**
+
+### T15.14 — Layer 1: input filtering
+
+- [ ] `safety/patterns.py` + `safety/input_filter.py` — `scan_input(text) -> list[Finding]` over
+      the known injection shapes. **Detection, not silent rewriting**: a filter that edits the
+      user's text hides the attack from every downstream record, including the trace this phase
+      is graded on.
+
+### T15.15 — Layer 3: output filtering
+
+- [ ] `safety/output_filter.py` — schema constraint on what leaves, citation verification, and
+      exfiltration detection (a secret-shaped string, a `store/` path, or an outbound URL in an
+      answer). `eval/generation_metrics.py::quote_is_present` already does citation checking —
+      import it, do not rewrite it.
+
+### T15.16 — The threat model
+
+- [ ] Cover direct injection, indirect injection via retrieved data, tool abuse, and exfiltration.
+      Say which of the four defense layers you skipped and why — "already implemented in HW2, here
+      is the file and the decision number" is a legitimate answer and a better one than a
+      duplicate.
+
+### T15.17 — The detector over traces
+
+- [ ] `safety/detect.py::scan_trace(trace) -> list[Finding]` — **a pure function of a trace**, so
+      the same code runs in the batch suite and against a live one. A batch pass over stored
+      traces satisfies the requirement; no worker, no asyncio. Write findings back with
+      `mlflow.log_feedback` under `safety.*` (contract #14).
+- [ ] Tool abuse reads `radf.branch` off the tool spans (contract #12) — a run that re-issues a
+      declined `apply_change` four times is one query, not a re-derivation from arguments.
+- [ ] Same out-of-band shape as `monitor/judge.py`, which you already own. The rubric pattern
+      applies: **named values, never a 1-10 score** (#37).
+
+### T15.18 — False positives
+
+- [ ] Run the detector over the legitimate traces 15B produced and count what it flags. The rate
+      is a required number in Part 4, and it is only meaningful against traces that were not
+      written to be attacked.
+
+### T15.18b — README § "Part 3 — Safety hardening"
+
+- [ ] Threat model, the layers, the skipped layer with its reason, and the false-positive count
+      **and** rate.
+
+**Depends on:** 15A, and 15B for the legitimate-traffic traces T15.18 counts against.
+**Not on Alejandro.**
+
+---
+
+## Phase 15E — Report assembly, Part 4 (Berat)
+
+**Each owner writes their own section; this phase assembles rather than authors** — same rule and
+same reason as 14E. T15.9b, T15.13b and T15.18b are the three sections.
+
+### T15.19 — Assemble and reconcile
+
+- [x] README § "HW6 — Agent evaluation, tracing and safety" created, with Part 1 complete and
+      placeholder subsections for Parts 2-4 (T15.9b).
+- [ ] Check the three sections agree on the scenario count, the temperature, and which traces each
+      one scored. Three authors over one trace store is exactly how a report ends up quoting two
+      different run counts.
+- [ ] Confirm every claim is measured. HW5 had to retract an asserted finding that the measurement
+      reversed (T14.8); assume the same risk here.
+- [ ] Verify the binary gates by actually running them: ≥10 scenarios with expected tool calls,
+      the Part 4 section exists, and the HW1/HW2 suites still pass.
+
+**Depends on:** 15C and 15D for their own subsections.
+
+---
+
 ## Open questions / blockers
 
 - [x] ~~Exact Zen model ids for `CHEAP` / `STRONG` + per-token prices (incl. cached rate)~~ —
@@ -1638,3 +2044,24 @@ Found while building Phase 14D. **`overlay/summarize.py` is Berat's file — fil
       module card from the signature list even when the symbol pass fails, so a large module is
       degraded rather than absent. Worth noting the failure is *counted* (`failed=2`) but not
       *named* — the run prints no node ids, which is why it went unnoticed through Phase 14B.
+
+### HW6
+
+- [ ] **`request_origin` for the heartbeat is unset** until T15.20 (Dias). Every other entry
+      point stamps it, so a monitor run is currently the only traffic in the trace store with no
+      origin tag — which reads as "unknown" rather than `batch` in any filter 15C or 15D writes.
+- [ ] **Traces are a new place user text lands.** Span inputs carry the request verbatim, and on
+      the channel path that is a Telegram user's message, currently governed by the HW2 visibility
+      rules (#24). The trace store is not visibility-filtered: anyone who can read
+      `store/mlflow.db` reads every user's requests. Accepted for now and recorded here rather
+      than solved quietly — the store is local, per-developer and gitignored, same posture as
+      `runs.jsonl`. If tracing ever moves to a shared tracking server, this becomes a real
+      decision (scrub, scope by tag, or don't).
+- [ ] **`ae04` is a filed agent defect, not just an eval row.** The model will not call
+      `diff_texts` on two short lines, three runs out of three, while holding both strings. It is
+      not a tool-description problem — the docstring names "two variants a user pasted". Worth one
+      experiment on the STRONG model before anyone edits Alejandro's docstring: if `strong` passes
+      it, this is a capability finding about `CHEAP` and belongs in the report, not in `tools/`.
+- [ ] **The eval reports no cost.** `llm_calls()` reads token counts and cost off both span types,
+      but `run_agent_eval` does not sum them, so a 39-run pass prints no bill. One line, and it
+      makes the "is this suite worth running in CI" question answerable.

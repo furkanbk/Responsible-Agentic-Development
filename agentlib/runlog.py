@@ -68,6 +68,13 @@ class RunLog:
     answer: Optional[str] = None
     ended_at: Optional[str] = None
 
+    # HW6: the MLflow trace for this run, if tracing was on. A FIELD, not a
+    # `scratch` key — the orchestrator overwrites `scratch` wholesale with the
+    # run's scratch table dump, which would silently drop the join. The trace is
+    # the derived record; this file is the durable one, and the id is how a
+    # scorer gets from one to the other (decision #89).
+    trace_id: Optional[str] = None
+
     def record_envelope(self, agent: str, envelope: dict[str, Any]) -> None:
         self.envelopes.append({"agent": agent, "envelope": envelope, "ts": _now()})
 
@@ -96,6 +103,7 @@ class RunLog:
             "scratch": self.scratch,
             "stopped": self.stopped,
             "answer": self.answer,
+            "trace_id": self.trace_id,
         }
 
     def flush(self) -> Path:

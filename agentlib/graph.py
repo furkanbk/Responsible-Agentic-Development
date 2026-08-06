@@ -28,6 +28,14 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from tracing.spans import (
+    BRANCH_ATTR,
+    GATED_ATTR,
+    set_attributes,
+    set_outputs,
+    tool_span,
+)
+
 from .core import BASE_URL, CHEAP
 from .graph_state import AgentState
 from .guards import (
@@ -41,7 +49,7 @@ from .guards import (
 _API_KEY_ENV = "OPENCODE_API_KEY"
 
 
-def _build_chat_model(model: str) -> ChatOpenAI:
+def _build_chat_model(model: str, temperature: Optional[float] = None) -> ChatOpenAI:
     """One `ChatOpenAI` pointed at the same Zen Responses endpoint `core.call` uses.
 
     `use_responses_api=True` matters: Zen's base URL is a Responses-API-shaped
@@ -57,7 +65,14 @@ def _build_chat_model(model: str) -> ChatOpenAI:
             f"{_API_KEY_ENV} is not set. Copy .env.example to .env and fill it in "
             "(the key is never hard-coded; see CLAUDE.md)."
         )
-    return ChatOpenAI(base_url=BASE_URL, api_key=api_key, model=model, use_responses_api=True)
+    # `temperature=None` means "send no temperature" — the provider default, which
+    # is what every run before HW6 used. It is NOT a synonym for 0.0, and the
+    # difference is the whole of HW6 requirement 6: three runs at a pinned 0.0 are
+    # identical, so no scenario can ever be shown as flaky (decision #92).
+    extra = {} if temperature is None else {"temperature": temperature}
+    return ChatOpenAI(
+        base_url=BASE_URL, api_key=api_key, model=model, use_responses_api=True, **extra
+    )
 
 
 def _is_truncated(ai: AIMessage) -> bool:
@@ -119,20 +134,31 @@ def _make_tools_node(
 
             schema = schema_by_name.get(name)
 
-            if schema is None:
-                out, branch = {"error": "unknown_tool", "tool": name}, "invalid_args"
-            elif errs := validate_args(schema, args):
-                out, branch = {"error": "invalid_args", "tool": name, "details": errs}, "invalid_args"
-            elif requires_approval(name):
-                if approve is not None and approve(name, args):
+            # HW6 (T15.3): the one place a tool is dispatched is the one place a
+            # TOOL span is opened. `mlflow.langchain.autolog()` cannot do this —
+            # this node is hand-written, not LangChain's `ToolNode`, so autolog
+            # sees one opaque "tools" step and the trajectory adapter would read
+            # nothing (decision #88). The span carries the guards' `branch` too:
+            # a safety scorer must not have to re-derive from arguments what the
+            # code already decided.
+            with tool_span(name, args) as span:
+                if schema is None:
+                    out, branch = {"error": "unknown_tool", "tool": name}, "invalid_args"
+                elif errs := validate_args(schema, args):
+                    out, branch = {"error": "invalid_args", "tool": name, "details": errs}, "invalid_args"
+                elif requires_approval(name):
+                    if approve is not None and approve(name, args):
+                        out = registry[name](**args)
+                        branch = "error" if is_error_result(out) else "ok"
+                    else:
+                        out, branch = {"declined_by_user": True, "tool": name}, "declined"
+                        declined_signatures.add(sig)
+                else:
                     out = registry[name](**args)
                     branch = "error" if is_error_result(out) else "ok"
-                else:
-                    out, branch = {"declined_by_user": True, "tool": name}, "declined"
-                    declined_signatures.add(sig)
-            else:
-                out = registry[name](**args)
-                branch = "error" if is_error_result(out) else "ok"
+
+                set_attributes(span, {BRANCH_ATTR: branch, GATED_ATTR: requires_approval(name)})
+                set_outputs(span, {"result": out})
 
             trace.append({"tool": name, "args": args, "output": out, "branch": branch})
             new_messages.append(
@@ -172,6 +198,7 @@ def build_graph(
     approve: Optional[Callable[[str, dict], bool]] = None,
     model: str = CHEAP,
     max_steps: int = 8,
+    temperature: Optional[float] = None,
 ) -> CompiledStateGraph:
     """Compile the `agent` <-> `tools` graph. One compiled graph per `run_agent` call.
 
@@ -181,7 +208,13 @@ def build_graph(
     on the same underlying functions: `validate_args` (guards.py) is unchanged and
     needs that JSON-Schema shape, not LangChain's.
     """
-    chat_model = _build_chat_model(model)
+    # The second argument is passed ONLY when there is a temperature to pass.
+    # Several suites (`test_smoke_hw1.py`, `test_loop_contract.py`, ...) replace
+    # `_build_chat_model` with a one-argument stub, and CLAUDE.md §8 keeps the
+    # pre-refactor suites unamended — so the untraced, untemperatured path has to
+    # call it exactly as it did before HW6, arity included.
+    chat_model = (_build_chat_model(model) if temperature is None
+                  else _build_chat_model(model, temperature))
     graph = StateGraph(AgentState)
     graph.add_node("agent", _make_agent_node(chat_model, tools))
     graph.add_node("tools", _make_tools_node(schema_by_name, registry, approve, max_steps))

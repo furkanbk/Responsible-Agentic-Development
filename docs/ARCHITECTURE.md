@@ -393,6 +393,35 @@ overlay is explicitly **not** migrating into Postgres now that one is running (d
   needs the Zen key in `.env`).
 - **Status:** **done** (Phase 0)
 
+### `tracing/` — MLflow tracing (HW6, Phase 15A)
+<!-- OWNER: Berat -->
+- **Owns:** `setup.py` (`init_tracing` / `tracing_enabled` / `flush`, sqlite backend at
+  `store/mlflow.db`, `RADF_MLFLOW_URI` override), `tags.py` (ambient `request_origin` ∈
+  `api|ui|batch` and `eval_case_id` contextvars), `spans.py` (`agent_span`, `tool_span`,
+  `llm_span`, `retriever_span` — contract #12), `trajectory.py` (`ToolCall`,
+  `tool_calls_from_trace`, `trace_request/answer/stopped`, `retrieved_chunks`, `llm_calls`,
+  `tool_branches`, `find_traces` — contract #13).
+- **Depends on:** `mlflow` (#87), and nothing else in the repo — deliberately, so a trace can be
+  read without importing `retrieval` or the agent.
+- **Instrumentation sites (all Berat's):** `agentlib/loop.py` (root span + `RunLog.trace_id`),
+  `agentlib/graph.py` (per-tool spans at the dispatch site, #88), `agentlib/core.py` (LLM span on
+  the raw Zen path), `retrieval/search.py` (retriever-order hits, #91), `orchestrator.py` (outer
+  span so planner + executor are one trace), `main.py` / `service.py` (`--trace`, origin tags).
+- **Invariants:** opt-in and no-op when off (#90); `runs.jsonl` is not replaced (#89); tags are
+  ambient, never parameters (#25).
+- **Status:** **done** (Phase 15A)
+
+### `eval/agent_*` — agent evaluation (HW6, Phase 15B)
+<!-- OWNER: Berat -->
+- **Owns:** `agent_cases.json` (13 scenarios, contract #15), `agent_metrics.py` (five hand-written
+  metrics + `pass_at_k` / `pass_hat_k`), `run_agent_eval.py` (3 runs per scenario at a stated
+  temperature, store sandbox, markdown report).
+- **Depends on:** `tracing.trajectory` for the trajectory; the loop's own trace list is a recorded
+  fallback, never the default.
+- **Measured (2026-08-06, `gpt-5.4-nano`, temperature 1.0, 39 runs):** pass@3 **0.92**, pass^3
+  **0.85**; ae13 flaky at 2/3; ae04 0/3 (the agent will not call `diff_texts` on two short lines).
+- **Status:** **done** (Phase 15B)
+
 ---
 
 ## 4. Data contracts
@@ -617,6 +646,20 @@ parallel branches did not collide in this table.
 | 84 | 2026-08-05 | app.theme (docstring), agents.planner | The module docstring **names the concrete thing** ("this is where the button colour lives"); the planner's seed retrieval widens to `k=10` | tuning `k`, the fusion weights or the reranker to compensate | A retrieval miss found live: "my apps button to red" ranked `app.theme` **8th**, so `k=5` excluded it, the seed fell back to the `app` package and the plan proposed editing `app.py`, which does not exist. `k` was the trigger; it was not the cause. The cause is that **neither indexed chunk for `app.theme` contained the word "button"** — the summary card, written from the docstring, described it as "visual settings as data for template-token substitution", so the lexical arm had *no term to match* on the single most obvious query anyone would ask, and IDF (the entire reason BM25 earns its place, #58) had nothing to weight. Fixing the docstring so the card says what the module is for moved it to **rank 1 on all six** test phrasings, at k=5 *and* k=10; widening `k` alone had moved 4/6 to 5/6. Recorded because the instinct is to tune the retriever, and the retriever was working — it cannot find what the corpus does not say. `k=10` is kept anyway as cheap insurance: candidates are a shortlist the model picks from, so a wrong one is ignored while a missing one fails the plan. |
 | 85 | 2026-08-05 | tools.decisions | `append_decision_record` returns a **`component_not_in_graph` warning** when the component resolves to no graph node — a warning, never a refusal | silently recording it (the state before); rejecting the write | A decision on a component that does not exist is not stored *wrongly*, it is stored **inertly**: the planner looks up decisions for the components in its impact set, so nothing ever reads it. Observed live — "record my decision that I like all buttons in this website to be green" resolved to `Module:website`, the write succeeded, the record was real, and it was invisible to the very next change request. Completely silent: no error, no orphan, no signal at all until someone wonders why a recorded constraint never fired. A warning rather than an error because §6 is explicit that an unresolvable uid is *surfaced for review*, not rejected — the legitimate case is a component that moved or has not been scanned, and refusing there would make the authored overlay hostage to the scanner. The model now sees the warning in the tool result and can re-record against a real component. |
 | 86 | 2026-08-05 | app.server, app/static | A **decisions browser** (third button / second tab): components carrying decisions, their records, and an `orphan` tag where the `symbol_uid` no longer resolves. Reads as an **anonymous user** — `query_decisions(user_id=None)`, so the SQL asks for `visibility = 'team'` | passing a user id so the panel shows everything; fetching all rows and hiding private ones in the page | The modules panel showed the derived half; this is the authored half, and the one the project exists for — no scan may overwrite it. Two properties are deliberate. **Orphans are shown, tagged, and explained rather than filtered out**: §6 says an unresolvable uid is surfaced for review, and the panel is the surface, so it also catches the failure #85 warns about at write time — a decision recorded against a component that never existed is inert, and nothing else in the system reveals that. **Visibility stays a `WHERE` clause** (#24): the app holds no session, so it reads anonymously and private rows are never fetched. Verified by requesting a private decision's uid directly and getting zero records — the boundary is in the query, so a bug in the page cannot widen it, which is exactly why #24 put it there rather than in a filter or a prompt. |
+
+### HW6 decisions (tracing, agent eval, safety)
+
+`#70-#86` are the demo branch's, above. HW6 takes **#87-#93** so the two do not collide.
+
+| # | Date | Component | Decision | Rejected alternative | Why |
+|---|------|-----------|----------|----------------------|-----|
+| 87 | 2026-08-06 | repo-wide | `mlflow` (full, not `mlflow-skinny`) is added under a **§4 HW6 amendment**; the trace store and span tree come from it, the trajectory adapter, all five agent metrics and every safety detector stay hand-written | `mlflow-skinny`; Ragas/DeepEval; `mlflow.genai`'s built-in judges instead of our scorers | Same narrow-amendment pattern as #53 and #56: name the package, keep what is graded. Skinny is not a smaller choice but a broken one here — it has no SQLAlchemy tracking backend, and MLflow 3 refuses the `./mlruns` file store outright (`MLFLOW_ALLOW_FILE_STORE`), so skinny leaves nowhere to put a trace. Full mlflow also brings `mlflow ui`, which is how the span tree is actually inspected. |
+| 88 | 2026-08-06 | agentlib.graph, tracing.spans | **Tool spans are hand-instrumented at the single dispatch site**, carrying `gen_ai.tool.name`, the arguments, and the guards' `radf.branch` | relying on `mlflow.langchain.autolog()`; converting the tools node to LangChain's `ToolNode` to get autolog's spans | Autolog covers the LangGraph path's model calls and nothing else we need: our tools node is hand-written, so autolog emits one opaque `tools` CHAIN span and `tool_calls_from_trace` would return `[]` — no trajectory, no Part 1, no tool-abuse signal. Converting to `ToolNode` would mean reimplementing `validate_args` / `requires_approval` / `detect_stall` inside a framework node, i.e. rewriting HW1's guards to get a span. Recording `branch` at dispatch is free (it is already computed) and saves the safety detector from re-deriving a guard's decision from arguments. |
+| 89 | 2026-08-06 | tracing/, agentlib.runlog | The MLflow store is **derived**; `store/runs/runs.jsonl` stays the durable record. The two are **joined by a `radf.run_id` trace tag + a `trace_id` FIELD on `RunLog`, never merged** | migrating run logging into MLflow now that a tracking backend exists; putting the trace id in `RunLog.scratch` | #62's argument, applied to a second database: a store that may be dropped and rebuilt cannot hold the only copy of anything. `runs.jsonl` also carries what a span tree does not — the ASSEMBLED instructions and pulled source ids — which is what tells "ignored the rule" apart from "never had the rule". `scratch` was rejected empirically: `orchestrator._finish` overwrites it wholesale with the scratch-table dump, silently dropping the join. |
+| 90 | 2026-08-06 | tracing/ | Tracing is **opt-in per process** (`init_tracing()`), and every helper degrades to a no-op — yielding `None`, swallowing its own errors — when it was never called or `mlflow` is absent | enabling at import; making `mlflow` a hard runtime dependency of `agentlib` | "All HW1 and HW2 functionality still works" is a graded gate, and an import-time dependency on a tracking backend is how it gets failed by accident. An observability layer that can take the agent down with it is worse than none: a span that fails to open must cost a span, never a run. |
+| 91 | 2026-08-06 | retrieval.search | The RETRIEVER span records `search()`'s ranking **before `pack_for_llm`** | recording what the model actually saw (the packed order) | #59, one layer out. Hit rate, precision and recall ignore position; MRR and nDCG read it. Recording the packed list would push lost-in-the-middle reordering upstream of every scorer, degrading exactly two of five metrics while the other three looked fine — a discrepancy that reads like a retrieval regression and is an instrumentation bug. |
+| 92 | 2026-08-06 | agentlib.loop, agentlib.graph, eval.run_agent_eval | `run_agent(..., temperature=None)` — `None` sends **no** temperature (the provider default, unchanged behaviour); the eval suite raises it to **1.0** and states it | pinning 0.0 repo-wide as the course notebooks do; hard-coding the eval temperature inside the loop | Three runs at a pinned 0.0 are one run three times: pass@3 would equal pass^3 by construction and requirement 6 (name a flaky scenario) would be unsatisfiable. `None` rather than a numeric default keeps every pre-HW6 run byte-identical, so the additive kwarg on the frozen `run_agent` signature (#49) changes no existing behaviour. |
+| 93 | 2026-08-06 | eval/, monitor/ | Scorers are consumed by **adapters**, never edited: `trace → scorer inputs` is new code in new files, and `eval/retrieval_metrics.py`, `eval/generation_metrics.py` and `monitor/judge.py` stay byte-identical | adding a `from_trace` classmethod or a trace-shaped overload to each scorer | If wiring a scorer to a trace requires editing the scorer, the adapter is doing too little — and the edit is unreviewable, because the same function then serves two callers with different inputs. It also keeps 15C off two other owners' files (§1): `judge_run(run: dict)` already takes a `runs.jsonl` record, so reconstructing that dict from a trace makes the monitor run over traces with zero diff. |
 
 ---
 

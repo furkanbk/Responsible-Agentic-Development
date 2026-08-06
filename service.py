@@ -57,6 +57,7 @@ from channel.silence import SilenceDecision, evaluate_silence
 from channel.telegram import TelegramChannel
 from orchestrator import run_change_request
 from overlay import db as overlay_db
+from tracing import init_tracing, request_origin_scope
 from overlay.uid import resolve_uid
 from tools.decisions import append_decision_record, retrieve_decisions, verify_graph_integrity
 from tools.graph_query import query_component_graph
@@ -246,6 +247,18 @@ def make_handler(send: Callable[[str, str], None], gate: ChannelGate, *,
     """Build the worker's handler. One turn, start to finish, on one thread."""
 
     def handle(event: InboundEvent) -> None:
+        # HW6 (T15.5): `request_origin` is stamped HERE, at the one place every
+        # inbound event crosses into the system, from the source the runtime
+        # observed — never from an argument and never from anything the model or
+        # the sender can influence (#25). A github push is machine traffic
+        # (`api`); a person in a chat is `ui`. `triggers/webhook.py` and
+        # `triggers/heartbeat.py` belong to other owners and need no edit: the
+        # webhook's events arrive through this handler, and the heartbeat sets
+        # its own `batch` scope in T15.20.
+        with request_origin_scope("api" if event.source == "github" else "ui"):
+            _handle(event)
+
+    def _handle(event: InboundEvent) -> None:
         # A github event is not a chat turn: no human is waiting, `text` is empty,
         # and the work is a rescan + orphan diff (T10.2), not a `run_agent`
         # answer. Route it to the watcher before the Q&A path below would mistake
@@ -418,10 +431,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="comma-separated chat ids to serve (default: any)")
     parser.add_argument("--gate-timeout", type=float, default=180.0,
                         help="seconds before an unanswered approval declines")
+    parser.add_argument("--trace", action="store_true",
+                        help="record MLflow traces for every turn (HW6). Off by "
+                             "default: tracing is opt-in per process, so a "
+                             "service run is never blocked by a trace backend.")
     args = parser.parse_args(argv)
 
     load_dotenv()
     verbose = not args.quiet
+    if args.trace and not init_tracing():
+        print("  [TRACE] mlflow unavailable — running untraced", file=sys.stderr)
 
     if args.dry_run:
         return dry_run(verbose)
