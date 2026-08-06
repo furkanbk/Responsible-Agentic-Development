@@ -36,3 +36,8 @@ env/
 .DS_Store
 .idea/
 .vscode/
+
+# Demo runtime: process logs and pids from app/run_demo.sh, and the memes
+# themselves (binary, per-demo, not the repo's business).
+app/logs/
+!app/memes/.gitkeep

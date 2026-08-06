@@ -192,7 +192,41 @@ def append_decision_record(
         conn.close()
 
     # Echo the component back so the model sees what its input resolved to.
-    return {**record, "component": component.strip()}
+    out = {**record, "component": component.strip()}
+
+    # Warn — never refuse — when the component is not in the graph.
+    #
+    # A decision recorded against a component that does not exist is not stored
+    # wrongly, it is stored *inertly*: nothing ever reads it. The planner looks
+    # up decisions for the components in its impact set, so a decision on
+    # `Module:website` cannot constrain a change to `app.theme`, and the failure
+    # is completely silent — the write succeeds, the record is real, and the
+    # constraint simply never fires. Observed live: "record my decision that I
+    # like all buttons in this website to be green" resolved to `Module:website`
+    # and was invisible to the very next change request.
+    #
+    # A warning rather than an error, because §6 is explicit that a decision
+    # whose uid does not resolve is *surfaced for review*, not rejected: the
+    # legitimate case is a component that has moved or has not been scanned yet,
+    # and refusing there would make the overlay hostage to the scanner. The model
+    # sees `component_not_in_graph` and can re-record against a real component;
+    # `verify_graph_integrity` reports the same thing after the fact.
+    graph = _load_graph(_graph_path())
+    nodes = (graph or {}).get("nodes") or []
+    if nodes:
+        known = {n.get("id") for n in nodes if isinstance(n, dict)}
+        known |= {n.get("path") for n in nodes if isinstance(n, dict)}
+        uid = record.get("symbol_uid") or ""
+        bare = uid.split(":", 1)[-1] if uid else component.strip()
+        if bare not in known and component.strip() not in known:
+            out["warning"] = "component_not_in_graph"
+            out["warning_detail"] = (
+                f"'{component.strip()}' is not a component in the knowledge graph, "
+                f"so this decision is orphaned: it will not be found when a change "
+                f"to a real component is planned. Re-record it against the module "
+                f"it constrains (or scan the repo if the component is new)."
+            )
+    return out
 
 
 def retrieve_decisions(

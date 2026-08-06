@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Billion Dollar Startup — Funny Memes</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --panel: #12151c;
+    --line: #232936;
+    --text: #e8ecf3;
+    --dim: #8b95a7;
+    /* Substituted from app/theme.py at request time — see theme.as_substitutions. */
+    --red: {{BUTTON_COLOR}};
+    --red-hot: {{BUTTON_HIGHLIGHT}};
+    --red-deep: {{BUTTON_SHADOW}};
+    /* One hue per actor in the trace. Kept few on purpose: a panel with ten
+       colours is a panel with none. */
+    --c-boot:   #6ee7a8;
+    --c-user:   #ffd166;
+    --c-agent:  #6cb8ff;
+    --c-tool:   #b48cff;
+    --c-plan:   #4fd6c4;
+    --c-exec:   #ff9f6e;
+    --c-gate:   #ff7ab6;
+    --c-answer: #9ae6b4;
+    --c-note:   #7c869b;
+    --c-error:  #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  /* Product left, trace right. A vertical panel is the right shape for this
+     content: rows are short and there are many of them, so height is the scarce
+     axis, and a full-height column shows roughly three times the lines a bottom
+     strip did without shrinking the meme. */
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: row;
+  }
+
+  /* --- left: the product --- */
+  .stage {
+    flex: 1 1 auto; min-width: 0; min-height: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; padding: 18px 20px; text-align: center;
+  }
+  .brand { font-size: 13px; letter-spacing: .22em; text-transform: uppercase; color: var(--dim); }
+  .brand b { color: var(--red-hot); font-weight: 700; }
+
+  .meme-frame {
+    flex: 1 1 0; min-height: 0; width: 100%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .meme-frame img {
+    max-height: 100%; max-width: min(100%, 780px);
+    object-fit: contain; border-radius: 12px;
+    border: 1px solid var(--line); background: #000;
+  }
+  .empty {
+    color: var(--dim); font-size: 14px; border: 1px dashed var(--line);
+    border-radius: 12px; padding: 34px 40px;
+  }
+  .empty code { color: var(--text); }
+
+  .controls { display: flex; align-items: flex-start; gap: 34px; }
+  .btn-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+  /* The secondary control. Deliberately not a second red circle: this one does
+     not change the product, it explains it. */
+  .know-btn {
+    width: auto; height: auto; border-radius: 999px;
+    padding: 13px 20px; margin-top: 14px;
+    background: transparent; border: 1px solid var(--line);
+    color: var(--dim); font: inherit; font-size: 13px;
+    box-shadow: none; transition: border-color .15s ease, color .15s ease;
+  }
+  .know-btn:hover { border-color: var(--c-agent); color: var(--c-agent); filter: none; }
+  .know-btn:active { transform: none; box-shadow: none; }
+
+  /* --- the knowledge panel --- */
+  .sheet {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    background: rgba(6,8,12,.72); backdrop-filter: blur(3px);
+    align-items: center; justify-content: center; padding: 4vh 3vw;
+  }
+  .sheet.open { display: flex; }
+  .sheet-inner {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    width: min(1040px, 100%); max-height: 92vh; display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .sheet-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 13px 18px; border-bottom: 1px solid var(--line);
+  }
+  .sheet-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .sheet-head p { margin: 0; font-size: 12px; color: var(--dim); }
+  .close {
+    width: auto; height: auto; border-radius: 8px;
+    padding: 6px 11px; background: transparent; border: 1px solid var(--line);
+    color: var(--dim); font: inherit; font-size: 12px; box-shadow: none;
+  }
+  .close:active { transform: none; box-shadow: none; }
+
+  .know-stack { display: flex; flex-direction: column; gap: 8px; }
+  .tabs { margin-left: auto; display: flex; gap: 6px; }
+  .tab {
+    width: auto; height: auto; border-radius: 7px; padding: 6px 13px;
+    background: transparent; border: 1px solid var(--line);
+    color: var(--dim); font: inherit; font-size: 12px; box-shadow: none;
+  }
+  .tab:hover { filter: none; color: var(--text); }
+  .tab:active { transform: none; box-shadow: none; }
+  .tab.sel { border-color: var(--c-agent); color: var(--c-agent); background: #16222f; }
+
+  /* Decision records. `orphan` is a state worth seeing, not an error to hide:
+     the component almost certainly moved, which is the signal (§6). */
+  .orphan-tag {
+    display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px;
+    font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--c-gate); background: #2a1622; border: 1px solid var(--c-gate);
+  }
+  .status-tag {
+    display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 10px;
+    letter-spacing: .06em; text-transform: uppercase; background: #1b202b;
+    color: var(--c-boot);
+  }
+  .status-tag.proposed { color: var(--c-user); }
+  .status-tag.superseded, .status-tag.rejected { color: var(--c-note); }
+
+  .sheet-body { display: flex; min-height: 0; flex: 1 1 auto; }
+  .mod-list {
+    flex: 0 0 260px; border-right: 1px solid var(--line);
+    overflow-y: auto; padding: 8px;
+  }
+  .mod {
+    display: block; width: 100%; text-align: left; height: auto; border-radius: 8px;
+    padding: 9px 11px; background: transparent; border: 1px solid transparent;
+    color: var(--text); font: inherit; box-shadow: none;
+  }
+  .mod:hover { background: #171b24; filter: none; }
+  .mod:active { transform: none; box-shadow: none; }
+  .mod.sel { background: #1a2130; border-color: var(--c-agent); }
+  .mod code { font-size: 13px; }
+  .mod small { display: block; color: var(--dim); font-size: 11px; margin-top: 2px; }
+
+  .mod-detail { flex: 1 1 auto; overflow-y: auto; padding: 16px 20px; }
+  .mod-detail h3 {
+    margin: 0 0 3px; font-size: 15px; font-family: ui-monospace, monospace;
+  }
+  .mod-detail .sub { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
+  .card {
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 11px;
+  }
+  .card h4 {
+    margin: 0 0 7px; font-size: 13px; font-family: ui-monospace, monospace;
+    color: var(--c-tool);
+  }
+  .card .row2 { font-size: 13px; margin-bottom: 6px; }
+  .card .lbl {
+    color: var(--dim); font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .1em; display: block; margin-bottom: 2px;
+  }
+  .card .meta { color: var(--dim); font-size: 11px; font-family: ui-monospace, monospace; }
+  .chunk {
+    background: #0b0e14; border: 1px dashed var(--line); border-radius: 8px;
+    padding: 10px 12px; margin-top: 8px;
+    font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--c-plan);
+    white-space: pre-wrap; overflow-x: auto;
+  }
+  .note {
+    color: var(--dim); font-size: 12px; line-height: 1.6;
+    border-left: 2px solid var(--line); padding-left: 12px; margin-bottom: 16px;
+  }
+  button {
+    width: 92px; height: 92px; border-radius: 50%; border: none; cursor: pointer;
+    background: radial-gradient(circle at 34% 30%, var(--red-hot), var(--red) 62%, var(--red-deep));
+    box-shadow: 0 8px 0 var(--red-deep), 0 14px 26px color-mix(in srgb, var(--red) 35%, transparent);
+    transition: transform .07s ease, box-shadow .07s ease;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:active {
+    transform: translateY(6px);
+    box-shadow: 0 2px 0 var(--red-deep), 0 6px 14px color-mix(in srgb, var(--red) 30%, transparent);
+  }
+  .caption { font-size: 13px; color: var(--dim); }
+
+  /* The drag handle. Its own element rather than a CSS resize on .logs, because
+     the panel has to grow LEFTWARD and `resize` only ever grows an element down
+     and right. Wider hit area than it looks: 6px of visible rule, 11px of grab. */
+  .split {
+    flex: 0 0 11px; cursor: col-resize; position: relative;
+    background: transparent; align-self: stretch;
+  }
+  .split::before {
+    content: ""; position: absolute; inset: 0 4px;
+    background: var(--line); transition: background .12s ease;
+  }
+  .split:hover::before, .split.dragging::before { background: var(--c-agent); }
+  body.dragging { cursor: col-resize; user-select: none; }
+
+  /* --- right: the trace --- */
+  .logs {
+    /* `flex-basis` is what the drag writes to, so it is set here once and then
+       owned by the splitter. */
+    flex: 0 0 clamp(320px, 36vw, 620px); min-height: 0;
+    background: var(--panel); border-left: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+    font-size: 12.5px;
+  }
+  .logs header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 14px; border-bottom: 1px solid var(--line);
+    color: var(--dim); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c-boot); }
+  .dot.bad { background: var(--c-error); }
+  .feed { flex: 1 1 0; overflow-y: auto; padding: 8px 12px 16px; }
+
+  .sec {
+    margin: 12px 0 6px; padding-top: 9px; border-top: 1px dashed var(--line);
+    color: var(--dim); font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
+  }
+  .sec:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+
+  /* Two lines per row, not four columns: in a narrow panel a column layout
+     wraps into an unreadable staircase. Line 1 is who and what kind, line 2 is
+     what happened. */
+  .row { padding: 3px 0 4px; border-left: 2px solid transparent; padding-left: 8px; }
+  .row .hd {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 10.5px; letter-spacing: .06em; margin-bottom: 1px;
+  }
+  .ts { color: #454d5c; }
+  .actor {
+    text-transform: uppercase; font-weight: 700; letter-spacing: .08em;
+    padding: 1px 6px; border-radius: 4px; background: #1b202b;
+  }
+  .tag { text-transform: uppercase; color: var(--dim); opacity: .85; }
+  .msg { word-break: break-word; line-height: 1.45; }
+  .detail { color: var(--dim); display: block; margin-top: 1px; }
+  .detail::before { content: "→ "; color: #3f4757; }
+
+  /* Actor decides the badge and the left rule — "who" is the question the eye
+     should answer first when scanning. Kind still tints the message text. */
+  .a-system   .actor { color: var(--c-note); }
+  .a-user     .actor { color: var(--c-user); background: #2a2415; }
+  .a-agent    .actor { color: var(--c-agent); background: #16222f; }
+  .a-planner  .actor { color: var(--c-plan); background: #142522; }
+  .a-executor .actor { color: var(--c-exec); background: #2a1d14; }
+  .a-gate     .actor { color: var(--c-gate); background: #2a1622; }
+
+  .a-user     { border-left-color: var(--c-user); }
+  .a-agent    { border-left-color: var(--c-agent); }
+  .a-planner  { border-left-color: var(--c-plan); }
+  .a-executor { border-left-color: var(--c-exec); }
+  .a-gate     { border-left-color: var(--c-gate); }
+
+  .k-boot   .msg { color: var(--c-boot); }
+  .k-user   .msg { color: var(--c-user); font-weight: 600; font-size: 13px; }
+  .k-agent  .msg { color: var(--c-agent); }
+  .k-tool   .msg { color: var(--c-tool); }
+  .k-plan   .msg { color: var(--c-plan); }
+  .k-exec   .msg { color: var(--c-exec); }
+  .k-gate   .msg { color: var(--c-gate); }
+  .k-answer .msg { color: var(--c-answer); }
+  .k-note   .msg { color: var(--c-note); }
+  .k-error  .msg { color: var(--c-error); }
+
+  /* Narrow screens (or a projector in portrait) fall back to the stacked
+     layout rather than squeezing both into nothing. */
+  @media (max-width: 900px) {
+    body { flex-direction: column; }
+    .logs { flex: 1 1 40% !important; border-left: none; border-top: 1px solid var(--line); }
+    .split { display: none; }   /* a horizontal drag on a vertical stack is a lie */
+  }
+
+  /* A one-line key, so "planner" vs "executor" does not need narrating. */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 4px 9px;
+    padding: 6px 12px; border-bottom: 1px solid var(--line);
+    font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .legend span { font-weight: 700; }
+  .lg-user { color: var(--c-user); }
+  .lg-qa { color: var(--c-agent); }
+  .lg-planner { color: var(--c-plan); }
+  .lg-executor { color: var(--c-exec); }
+  .lg-gate { color: var(--c-gate); }
+</style>
+</head>
+<body>
+
+<section class="stage">
+  <div class="brand">{{BRAND_NAME}} · {{BRAND_TAGLINE}}</div>
+  <div class="meme-frame" id="frame">
+    <div class="empty">no memes yet — drop images into <code>app/memes/</code></div>
+  </div>
+  <div class="controls">
+    <div class="btn-wrap">
+      <button id="btn" aria-label="change the meme"></button>
+      <div class="caption">{{BUTTON_CAPTION}}</div>
+    </div>
+    <div class="know-stack">
+      <button class="know-btn" id="know">what does the agent know about this app?</button>
+      <button class="know-btn" id="decisions">what has been decided?</button>
+    </div>
+  </div>
+</section>
+
+<section class="sheet" id="sheet">
+  <div class="sheet-inner">
+    <div class="sheet-head">
+      <div>
+        <h2 id="sheet-title">app/ — as the agent sees it</h2>
+        <p id="sheet-sub">graph nodes (derived) joined to their authored summary cards on <code>symbol_uid</code></p>
+      </div>
+      <div class="tabs">
+        <button class="tab sel" id="tab-modules">modules</button>
+        <button class="tab" id="tab-decisions">decisions</button>
+      </div>
+      <button class="close" id="close">close</button>
+    </div>
+    <div class="sheet-body">
+      <div class="mod-list" id="modlist"></div>
+      <div class="mod-detail" id="moddetail"></div>
+    </div>
+  </div>
+</section>
+
+<div class="split" id="split" title="drag to resize"></div>
+
+<section class="logs" id="logs">
+  <header>
+    <span class="dot" id="dot"></span>
+    <span>system trace</span>
+    <span style="flex:1"></span>
+    <span id="counter"></span>
+  </header>
+  <div class="legend">
+    <span class="lg-user">user</span>
+    <span class="lg-qa">qa-agent</span>
+    <span class="lg-planner">planner</span>
+    <span class="lg-executor">executor</span>
+    <span class="lg-gate">gate</span>
+  </div>
+  <div class="feed" id="feed"></div>
+</section>
+
+<script>
+const feed = document.getElementById('feed');
+const frame = document.getElementById('frame');
+const btn = document.getElementById('btn');
+const dot = document.getElementById('dot');
+const counter = document.getElementById('counter');
+
+// --- memes ---
+async function nextMeme() {
+  const res = await fetch('/api/meme', {cache: 'no-store'});
+  if (!res.ok) {
+    frame.innerHTML = '<div class="empty">no memes yet — drop images into <code>app/memes/</code></div>';
+    return;
+  }
+  const data = await res.json();
+  const img = new Image();
+  img.alt = data.name;
+  img.src = '/memes/' + encodeURIComponent(data.name) + '?t=' + Date.now();
+  img.onload = () => { frame.replaceChildren(img); };
+  counter.textContent = data.total + ' memes';
+}
+btn.addEventListener('click', nextMeme);
+nextMeme();
+
+// --- the splitter ---
+// Writes flex-basis on .logs, measured from the RIGHT edge of the window so the
+// panel tracks the cursor directly whichever way you drag. Clamped so neither
+// side can be dragged to nothing — a panel you cannot get back is worse than one
+// that is the wrong width. Remembered across reloads, because the right width
+// depends on the projector, and re-dragging it every reload during a demo is
+// exactly the kind of small friction that shows.
+const logsEl = document.getElementById('logs');
+const split = document.getElementById('split');
+const MIN_PANEL = 280, MIN_STAGE = 360;
+
+const saved = Number(localStorage.getItem('radf.panelWidth'));
+if (saved) logsEl.style.flexBasis = saved + 'px';
+
+function setPanel(px) {
+  const max = window.innerWidth - MIN_STAGE;
+  const w = Math.max(MIN_PANEL, Math.min(px, max));
+  logsEl.style.flexBasis = w + 'px';
+  localStorage.setItem('radf.panelWidth', String(w));
+}
+
+split.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  split.setPointerCapture(e.pointerId);
+  split.classList.add('dragging');
+  document.body.classList.add('dragging');
+});
+split.addEventListener('pointermove', e => {
+  if (!split.classList.contains('dragging')) return;
+  setPanel(window.innerWidth - e.clientX);
+});
+function endDrag(e) {
+  if (!split.classList.contains('dragging')) return;
+  split.classList.remove('dragging');
+  document.body.classList.remove('dragging');
+  try { split.releasePointerCapture(e.pointerId); } catch (_) {}
+}
+split.addEventListener('pointerup', endDrag);
+split.addEventListener('pointercancel', endDrag);
+// Double-click resets to the default, so a drag is never a one-way door.
+split.addEventListener('dblclick', () => {
+  localStorage.removeItem('radf.panelWidth');
+  logsEl.style.flexBasis = '';
+});
+
+// --- the knowledge panel ---
+// Shows the two layers side by side because their separation is the point: the
+// graph node is derived and any scan may replace it, the summary card is
+// authored and no scan may touch it, and they join on symbol_uid. The chunk text
+// is fetched from Postgres rather than rebuilt here, so what you read is exactly
+// what search_corpus would return.
+const sheet = document.getElementById('sheet');
+const modlist = document.getElementById('modlist');
+const moddetail = document.getElementById('moddetail');
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+async function openSheet() {
+  sheet.classList.add('open');
+  modlist.replaceChildren(el('div', 'note', 'loading…'));
+  moddetail.replaceChildren();
+  const {modules} = await (await fetch('/api/modules', {cache: 'no-store'})).json();
+  modlist.replaceChildren();
+  if (!modules.length) {
+    modlist.appendChild(el('div', 'note',
+      'No app.* nodes in the graph yet — run a repo scan, then overlay.summarize.'));
+    return;
+  }
+  modules.forEach((m, i) => {
+    const b = el('button', 'mod');
+    b.appendChild(el('code', null, m.id));
+    b.appendChild(el('small', null,
+      `${m.path} · ${m.cards} card${m.cards === 1 ? '' : 's'}` +
+      (m.symbols.length ? ` · ${m.symbols.length} symbols` : '')));
+    b.onclick = () => {
+      [...modlist.children].forEach(c => c.classList.remove('sel'));
+      b.classList.add('sel');
+      showModule(m);
+    };
+    modlist.appendChild(b);
+    if (i === 0) b.click();
+  });
+}
+
+async function showModule(m) {
+  moddetail.replaceChildren(el('div', 'note', 'loading…'));
+  const d = await (await fetch('/api/module?uid=' + encodeURIComponent(m.uid),
+                               {cache: 'no-store'})).json();
+  moddetail.replaceChildren();
+  moddetail.appendChild(el('h3', null, m.id));
+  moddetail.appendChild(el('div', 'sub', `${m.uid}  ·  ${m.path}`));
+
+  if (!d.cards.length) {
+    moddetail.appendChild(el('div', 'note',
+      'No summary card yet. Cards are authored by overlay/summarize.py into the ' +
+      'sqlite overlay, keyed on symbol_uid — never into knowledge_graph.json, ' +
+      'where the next scan would delete them.'));
+    return;
+  }
+
+  moddetail.appendChild(el('div', 'note',
+    'Each card is authored prose in the overlay. The dashed block under it is the ' +
+    'chunk built from that card and indexed in Postgres — byte for byte what ' +
+    'search_corpus returns when this module is a hit.'));
+
+  const byName = {};
+  d.chunks.forEach(c => { byName[c.symbol || ''] = c; });
+
+  d.cards.forEach(c => {
+    const card = el('div', 'card');
+    card.appendChild(el('h4', null, c.symbol));
+    if (c.signature) {
+      const s = el('div', 'row2');
+      s.appendChild(el('span', 'lbl', 'signature'));
+      s.appendChild(el('code', null, c.signature));
+      card.appendChild(s);
+    }
+    const sum = el('div', 'row2');
+    sum.appendChild(el('span', 'lbl', 'summary'));
+    sum.appendChild(document.createTextNode(c.summary));
+    card.appendChild(sum);
+
+    const resp = el('div', 'row2');
+    resp.appendChild(el('span', 'lbl', 'responsibility — when you would touch it'));
+    resp.appendChild(document.createTextNode(c.responsibility));
+    card.appendChild(resp);
+
+    card.appendChild(el('div', 'meta',
+      `authored by ${c.author_id} · content_sha ${c.content_sha} · ${c.updated_at}`));
+
+    const chunk = byName[c.symbol === '(module)' ? '' : c.symbol]
+               || byName[c.symbol] || null;
+    if (chunk) {
+      const pre = el('div', 'chunk', chunk.text);
+      card.appendChild(el('div', 'meta', `indexed as ${chunk.chunk_id} · ${chunk.heading_path}`));
+      card.appendChild(pre);
+    } else if (d.indexed_error) {
+      card.appendChild(el('div', 'meta', `not indexed: ${d.indexed_error}`));
+    } else {
+      card.appendChild(el('div', 'meta',
+        'no chunk in the index — re-run: python -m retrieval.index'));
+    }
+    moddetail.appendChild(card);
+  });
+}
+
+// --- the decisions browser ---
+// The authored half. Structure is derived and any scan replaces it; decisions
+// are authored and no scan may touch them — this is the visible proof the repo
+// accumulates knowledge instead of resetting.
+async function openDecisions() {
+  modlist.replaceChildren(el('div', 'note', 'loading…'));
+  moddetail.replaceChildren();
+  const {groups} = await (await fetch('/api/decisions', {cache: 'no-store'})).json();
+  modlist.replaceChildren();
+  if (!groups.length) {
+    modlist.appendChild(el('div', 'note', 'No team-visible decisions recorded yet.'));
+    return;
+  }
+  groups.forEach((g, i) => {
+    const b = el('button', 'mod');
+    const code = el('code', null, g.label);
+    b.appendChild(code);
+    if (g.orphan) b.appendChild(el('span', 'orphan-tag', 'orphan'));
+    b.appendChild(el('small', null,
+      `${g.count} decision${g.count === 1 ? '' : 's'}` +
+      (g.orphan ? ' · component not in the graph' : '')));
+    b.onclick = () => {
+      [...modlist.children].forEach(c => c.classList.remove('sel'));
+      b.classList.add('sel');
+      showDecisions(g);
+    };
+    modlist.appendChild(b);
+    if (i === 0) b.click();
+  });
+}
+
+async function showDecisions(g) {
+  moddetail.replaceChildren(el('div', 'note', 'loading…'));
+  const d = await (await fetch('/api/decision?uid=' + encodeURIComponent(g.uid),
+                               {cache: 'no-store'})).json();
+  moddetail.replaceChildren();
+  moddetail.appendChild(el('h3', null, g.label));
+  moddetail.appendChild(el('div', 'sub', g.uid || 'applies repo-wide'));
+
+  if (g.orphan) {
+    moddetail.appendChild(el('div', 'note',
+      'This component is not in the knowledge graph, so these decisions are ' +
+      'orphaned: nothing looks them up when a change is planned. Surfaced, not ' +
+      'deleted — the component most likely moved, and that is the signal worth ' +
+      'having.'));
+  }
+
+  d.records.forEach(r => {
+    const card = el('div', 'card');
+    const h = el('h4');
+    h.appendChild(document.createTextNode(r.decision_id + '  '));
+    h.appendChild(el('span', 'status-tag ' + (r.status || ''), r.status || '?'));
+    card.appendChild(h);
+
+    const dec = el('div', 'row2');
+    dec.appendChild(el('span', 'lbl', 'decision'));
+    dec.appendChild(document.createTextNode(r.decision || ''));
+    card.appendChild(dec);
+
+    if (r.rationale) {
+      const rat = el('div', 'row2');
+      rat.appendChild(el('span', 'lbl', 'rationale — why'));
+      rat.appendChild(document.createTextNode(r.rationale));
+      card.appendChild(rat);
+    }
+    if (r.rejected) {
+      const rej = el('div', 'row2');
+      rej.appendChild(el('span', 'lbl', 'rejected alternative'));
+      rej.appendChild(document.createTextNode(r.rejected));
+      card.appendChild(rej);
+    }
+    card.appendChild(el('div', 'meta', `authored by ${r.author_id} · ${r.ts}`));
+    moddetail.appendChild(card);
+  });
+
+  moddetail.appendChild(el('div', 'note',
+    'This panel holds no session, so it reads as an anonymous user: the query ' +
+    'asks for team-visible rows only. Private decisions are never fetched — ' +
+    'not fetched and then hidden by the page.'));
+}
+
+// --- tabs ---
+const TABS = {
+  modules: {
+    title: 'app/ — as the agent sees it',
+    sub: 'graph nodes (derived) joined to their authored summary cards on symbol_uid',
+    open: openSheet,
+  },
+  decisions: {
+    title: 'decisions on file',
+    sub: 'authored knowledge — no scan may overwrite it (team-visible only)',
+    open: openDecisions,
+  },
+};
+
+function showTab(name) {
+  const t = TABS[name];
+  document.getElementById('sheet-title').textContent = t.title;
+  document.getElementById('sheet-sub').textContent = t.sub;
+  document.getElementById('tab-modules').classList.toggle('sel', name === 'modules');
+  document.getElementById('tab-decisions').classList.toggle('sel', name === 'decisions');
+  sheet.classList.add('open');
+  t.open();
+}
+
+document.getElementById('know').addEventListener('click', () => showTab('modules'));
+document.getElementById('decisions').addEventListener('click', () => showTab('decisions'));
+document.getElementById('tab-modules').addEventListener('click', () => showTab('modules'));
+document.getElementById('tab-decisions').addEventListener('click', () => showTab('decisions'));
+document.getElementById('close').addEventListener('click',
+  () => sheet.classList.remove('open'));
+sheet.addEventListener('click', e => {
+  if (e.target === sheet) sheet.classList.remove('open');
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') sheet.classList.remove('open');
+});
+
+// --- trace ---
+// Two sections, in the order the demo tells its story: what is running, then
+// what happened when somebody typed. `section` comes from the server so the
+// split is not re-derived here.
+let since = 0;
+let currentSection = null;
+const SECTION_TITLE = {boot: 'infrastructure', chat: 'telegram interactions'};
+
+function render(ev) {
+  if (ev.section !== currentSection) {
+    currentSection = ev.section;
+    const h = document.createElement('div');
+    h.className = 'sec';
+    h.textContent = SECTION_TITLE[ev.section] || ev.section;
+    feed.appendChild(h);
+  }
+  const row = document.createElement('div');
+  row.className = 'row k-' + ev.kind + ' a-' + (ev.actor || 'system');
+
+  const hd = document.createElement('div');
+  hd.className = 'hd';
+  const ts = document.createElement('span'); ts.className = 'ts'; ts.textContent = ev.ts;
+  const ac = document.createElement('span'); ac.className = 'actor';
+  ac.textContent = ev.actor || 'system';
+  const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = ev.kind;
+  hd.append(ts, ac, tg);
+
+  const msg = document.createElement('div');
+  msg.className = 'msg';
+  msg.textContent = ev.text;
+  if (ev.detail) {
+    const d = document.createElement('span');
+    d.className = 'detail';
+    d.textContent = ev.detail;
+    msg.appendChild(d);
+  }
+  row.append(hd, msg);
+  feed.appendChild(row);
+  while (feed.children.length > 500) feed.removeChild(feed.firstChild);
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/logs?since=' + since, {cache: 'no-store'});
+    const {events} = await res.json();
+    const stuck = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
+    for (const ev of events) { render(ev); since = ev.seq; }
+    if (events.length && stuck) feed.scrollTop = feed.scrollHeight;
+    if (events.some(e => e.kind === 'error')) dot.classList.add('bad');
+  } catch (_) { /* the page outlives a blip in the server */ }
+  setTimeout(poll, 700);
+}
+poll();
+</script>
+</body>
+</html>

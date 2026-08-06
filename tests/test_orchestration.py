@@ -214,7 +214,18 @@ class TestExecutorGuards:
         out = run_executor("do it", run_id=run_id, verbose=False)
         assert out.status == "failed" and "malformed" in out.notes
 
-    def test_an_empty_step_list_is_ok_not_a_failure(self):
+    def test_an_empty_step_list_asks_rather_than_reporting_success(self):
+        """An empty step list is not a failure — but it is not `ok` either.
+
+        Amended from `test_an_empty_step_list_is_ok_not_a_failure` (decision
+        #78). The original intent — "this is not a fault" — still holds and is
+        still asserted: `needs_input` is the ask-a-human branch, not the failure
+        branch. What changed is that `ok` was ALSO wrong: it propagates to the
+        orchestrator's final status, so a human who asked for a change was told
+        `status: ok` for a run that touched no file. Seen live when the model
+        named a seed but returned steps with empty `path`, which `_clean_steps`
+        drops.
+        """
         from agents.executor import run_executor
 
         conn = overlay_db.connect()
@@ -224,7 +235,9 @@ class TestExecutorGuards:
                                  key=PLAN_KEY, value=plan_with(steps=[]))
         conn.close()
         out = run_executor("do it", run_id=run_id, verbose=False)
-        assert out.status == "ok" and out.result["changes"] == []
+        assert out.status == "needs_input"      # asks, never claims success
+        assert out.status != "failed"           # the original point, preserved
+        assert out.result["changes"] == []
 
 
 class TestReadSourceConfinement:

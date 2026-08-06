@@ -167,9 +167,20 @@ def run_executor(
         )
 
     if not plan.get("steps"):
-        return AgentResult.ok(
-            {"plan": plan, "changes": []}, agent="executor",
-            notes="plan had no steps — nothing to implement",
+        # A plan with no steps for a change request is a planner fault, not a
+        # finished job: `ok` here reports success for a run that touched nothing,
+        # which is the same wrong signal decision #75 removed from the tail of
+        # `_finish_executor`. It happens when the model names a seed but returns
+        # steps whose `path` is empty, which `_clean_steps` drops.
+        #
+        # `needs_input`, not `blocked` or `failed`: nothing forbade the change and
+        # nothing broke — the plan is simply unusable, and the fix is a human
+        # saying which file they meant.
+        return AgentResult.needs_input(
+            ["the plan named no file to edit — the planner produced a seed but no "
+             "usable steps, so there is nothing to implement. Re-state the request "
+             "naming the file, or re-run the planner."],
+            agent="executor", result={"plan": plan, "changes": []},
         )
 
     schemas, registry = build_executor_registry()
@@ -251,6 +262,26 @@ def _envelope_from_loop(result: dict, plan: dict, run_log: Any) -> AgentResult:
         return AgentResult.blocked(
             "the change needs a file outside the plan's impact set — the impact "
             "analysis was incomplete",
+            agent="executor", result=payload,
+        )
+
+    # Nothing was written. For THIS agent that is never `ok`: the executor exists
+    # to carry out a plan, so a run that changes no file either refused or gave
+    # up, and `ok` is the one status that tells the caller neither.
+    #
+    # The case that exposed it is the brief's own escalate rule — "a recorded
+    # decision in `constraints` forbids the change outright" -> `blocked`. That
+    # refusal arrives as an ANSWER with no tool call, so every branch above
+    # misses it and it was landing as `ok` with zero changes, one field away from
+    # a caller concluding the change went in.
+    #
+    # Decided on the trace, never on the answer's prose — flow control must not
+    # depend on a sentence (#29) — and "wrote no files" is a fact about the
+    # trace. WHICH refusal it was stays in `notes`, for the human to read.
+    if not changes:
+        return AgentResult.blocked(
+            result.get("answer")
+            or "the executor wrote no files for a plan that asked for writes",
             agent="executor", result=payload,
         )
 

@@ -46,8 +46,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("query", help="the request for the agent")
     parser.add_argument(
-        "--model", choices=["cheap", "strong"], default="cheap",
-        help="which pinned model to use (default: cheap)",
+        "--model", choices=["cheap", "strong"], default="strong",
+        help="which pinned model to use (default: strong)",
     )
     parser.add_argument(
         "--max-steps", type=int, default=8,
