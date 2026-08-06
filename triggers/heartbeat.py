@@ -23,6 +23,12 @@ so the judge is never re-run (and re-billed) on runs already graded.
 The heartbeat drives `monitor.judge` from OUTSIDE — judge.py stays read-only
 (decision #40). This module reads runs, calls the judge, and posts problems; it
 never touches how a verdict is formed.
+
+HW6 (T15.20): the heartbeat is the one entry point `service.py::make_handler`
+does not cover, because it fires on its own clock rather than on an inbound
+event — so it stamps its own `request_origin`. Without it, monitor traffic is
+the only traffic in the trace store with no origin tag, which reads as *unknown*
+rather than as `batch` in any filter the eval or safety passes write.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from agentlib.runlog import read_runs, runs_dir
 from channel.silence import REASON_HEARTBEAT_CLEAN, TEAM
 from monitor.judge import Verdict, judge_runs, problems, report
 from overlay import db as overlay_db
+from tracing.tags import request_origin_scope
 
 # A judge takes the pending records and returns verdicts. Injected so a test can
 # grade deterministically without a live model (the real default calls the model
@@ -107,7 +114,27 @@ def run_once(
       judged       how many were graded (0 unless acted)
       problems     the problem verdicts found (empty on a clean pass)
       silence_id   the recorded heartbeat_clean row when a clean pass acted
+
+    HW6 (T15.20): the whole pass runs under `request_origin_scope("batch")`, so
+    the judge's own model calls are separable from the traffic they grade. The
+    origin is ambient and set by the entry point, never an argument (#25) — the
+    scope wraps here rather than being threaded into `judge`, which would put a
+    trace tag inside a callable a caller supplies.
     """
+    with request_origin_scope("batch"):
+        return _run_once(threshold=threshold, judge=judge, post=post, trigger=trigger)
+
+
+def _run_once(
+    *,
+    threshold: int,
+    judge: Judge,
+    post: Optional[Poster],
+    trigger: str,
+) -> dict[str, Any]:
+    """The pass itself. Split out only so the origin scope can wrap it without
+    re-indenting the function — `run_once`'s contract is unchanged, same shape
+    as `agentlib/loop.py`'s `run_agent` / `_run` split."""
     runs = read_runs()
     watermark = read_watermark()
     pending = unjudged(runs, watermark)

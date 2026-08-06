@@ -9,7 +9,7 @@ Branch: `hw1/<owner>/<short-task>` · `hw2/<owner>/<short-task>` · `hw3/<owner>
 > **Current phase: HW6** (Phase 15) — agent evaluation, MLflow tracing, safety hardening.
 > **The classroom calls it "HW3"; here it is HW6** — jump to the `# HW6` section near the end of
 > this file, and do not touch Phases 9-11, which are the real HW3. Your next task:
-> **Berat** 15A+15B (done) · **Alejandro** 15C · **Dias** 15D · all three write their own README
+> **Berat** 15A+15B (done) · **Alejandro** 15C · **Dias** 15D (done) · all three write their own README
 > subsection. The HW4 note below is historical.
 >
 > **Historical: HW4** (Phase 12-13). HW1 (Phases 0-3), HW2 (Phases 4-8) and HW3 (Phases 9-11)
@@ -1771,10 +1771,13 @@ case whose `forbidden_tools` is the payload's goal.
       instrumentation task that forces edits into three people's files is a task that serialises
       the homework a second time.
 - [x] The eval runners set `batch` themselves (T15.8).
-- [ ] **T15.20 (Dias, with 15D):** `triggers/heartbeat.py` is the one entry point the service
+- [x] **T15.20 (Dias, with 15D):** `triggers/heartbeat.py` is the one entry point the service
       handler does not cover — it fires on its own clock, not on an inbound event. One
       `with request_origin_scope("batch"):` around `run_once`. Three lines, in your file, and
-      the monitor's own runs are then separable from the traffic it grades.
+      the monitor's own runs are then separable from the traffic it grades. Done as a
+      `run_once` / `_run_once` split, the same shape `agentlib/loop.py` used to wrap the root
+      span without re-indenting a function; `run_once`'s signature and return are unchanged, and
+      `test_the_heartbeat_stamps_its_own_request_origin` asserts the scope does not leak out.
 
 **Depends on:** nothing. **Blocks:** 15B, 15C, 15D.
 
@@ -1887,46 +1890,105 @@ it.** Before writing anything, read what exists — this is the §0 rule, and he
 
 ### T15.14 — Layer 1: input filtering
 
-- [ ] `safety/patterns.py` + `safety/input_filter.py` — `scan_input(text) -> list[Finding]` over
-      the known injection shapes. **Detection, not silent rewriting**: a filter that edits the
-      user's text hides the attack from every downstream record, including the trace this phase
-      is graded on.
+- [x] `safety/patterns.py` + `safety/input_filter.py` — `scan_input(text) -> list[Finding]` over
+      six pattern families (override, role hijack, forged authority, secrecy, exfil request,
+      memory injection). **Detection, not silent rewriting** (decision #94): nothing here mutates
+      text, and `scan_input` is not on the request path at all — the detector runs out of band
+      over the trace, the same shape `monitor/judge.py` uses (#40).
+- [x] **The channel decides the class, not the regex.** The identical sentence is
+      `direct_injection` in the user's message and `indirect_injection` inside a decision the
+      agent pulled in, so `scan_input(channel=...)` is explicit and `scan_data` is a separate
+      name. Getting it wrong mislabels every row of a report whose whole structure is
+      "which of the four classes".
+- [x] **Escalation is named, not numeric:** one family firing is `likely` (a quotation or a
+      question about prompt injection will do it — this repo's own docs would); two different
+      families in one text is `confirmed` (#96).
+- [x] **Calibrated against the legitimate set, and the calibration is a test.** ae07 asks the
+      agent to DELETE a graph node and ae10 opens with "Remember for next time" — both ordinary
+      here, so there is no "mentions a destructive tool" pattern and the memory-injection
+      patterns require a *privilege* claim. `test_no_legitimate_task_text_is_flagged` reads the
+      same file the published rate does, so loosening a pattern goes red before it goes into a
+      number.
 
 ### T15.15 — Layer 3: output filtering
 
-- [ ] `safety/output_filter.py` — schema constraint on what leaves, citation verification, and
-      exfiltration detection (a secret-shaped string, a `store/` path, or an outbound URL in an
-      answer). `eval/generation_metrics.py::quote_is_present` already does citation checking —
-      import it, do not rewrite it.
+- [x] `safety/output_filter.py` — three checks that fail three different ways: `schema_findings`
+      (data-fence leakage, a tool call narrated as prose, an internal record dump, `answered`
+      with no answer), `citation_findings`, `exfiltration_findings` (credential shapes, `.env`,
+      and a URL carrying a query string or long path that is in neither the request nor
+      anything the run retrieved).
+- [x] `quote_is_present` **imported, not rewritten** — lazily, because
+      `eval.generation_metrics` pulls in `agentlib.core` and `retrieval.types`, and `scan_trace`
+      advertises itself as readable without standing up the answering stack.
+- [x] **The `store/` path check the task line suggested is deliberately NOT implemented.** This
+      repo's corpus is its own architecture: ae05 and ae06 are answers *about*
+      `knowledge_graph.json` and `runs.jsonl`, so flagging a store path would turn the
+      false-positive rate into a measure of how much the agent talks about itself. Narrowed to
+      secret shapes and `.env`, and `test_talking_about_the_stores_is_not_exfiltration` pins it.
 
 ### T15.16 — The threat model
 
-- [ ] Cover direct injection, indirect injection via retrieved data, tool abuse, and exfiltration.
-      Say which of the four defense layers you skipped and why — "already implemented in HW2, here
-      is the file and the decision number" is a legitimate answer and a better one than a
-      duplicate.
+- [x] All four classes covered, in README § HW6 Part 3 and in `safety/attack_cases.json`:
+      direct injection (`sa01`, `sa02`), indirect injection through a planted team decision
+      (`sa03`), tool abuse by re-issuing a declined gated call (`sa04`), exfiltration plus
+      memory injection (`sa05`).
+- [x] **No layer was skipped, and two were not re-built** (decision #95). Layers 2 and 4 landed
+      in HW1/HW2 and are reported with file names and decision numbers rather than duplicated —
+      a second data fence would have to be kept in step with `agentlib/context.py`, and a second
+      gated set would drift from `guards.GATED`, which is why `detect.py` imports it.
 
 ### T15.17 — The detector over traces
 
-- [ ] `safety/detect.py::scan_trace(trace) -> list[Finding]` — **a pure function of a trace**, so
-      the same code runs in the batch suite and against a live one. A batch pass over stored
-      traces satisfies the requirement; no worker, no asyncio. Write findings back with
-      `mlflow.log_feedback` under `safety.*` (contract #14).
-- [ ] Tool abuse reads `radf.branch` off the tool spans (contract #12) — a run that re-issues a
-      declined `apply_change` four times is one query, not a re-derivation from arguments.
-- [ ] Same out-of-band shape as `monitor/judge.py`, which you already own. The rubric pattern
-      applies: **named values, never a 1-10 score** (#37).
+- [x] `safety/detect.py::scan_trace(trace) -> list[Finding]` — pure, never raises on a malformed
+      trace, and used unchanged by both the batch pass and a live scan. Writing findings back is
+      a **separate** function (`log_findings`), because a detector that both decides and records
+      cannot be re-run without a side effect. Feedback goes out under the `safety.*` namespace
+      (contract #14), marked `AssessmentSourceType.CODE` so a deterministic scan is not confused
+      with a judge's opinion in the UI.
+- [x] Tool abuse reads `radf.branch` off the tool spans (contract #12) — `declined_call_retried`,
+      `invalid_args_probing`, and `gated_call_after_injection`.
+- [x] **One decline is not a finding** (decision #97). ae07 is a legitimate scenario that asks
+      for a node to be deleted and is 3/3 in the Part 1 table *because the code declines it*, so
+      a threshold of one would make the best property in the repo its noisiest alarm. Two is the
+      payload pushing.
+- [x] Named values, never a 1-10 score (#37) — and `not_checked` as a value in its own right,
+      because a check with no input and a check that found nothing produce the same empty list
+      (#96). `checks_run(trace)` is reported beside every finding list.
+- [x] It reads span **outputs** directly, which `tracing/trajectory.py` deliberately drops: a
+      trajectory is what the agent tried, but indirect injection arrives in what came back.
+      `trajectory.py`'s own docstring names this module as that caller.
 
 ### T15.18 — False positives
 
-- [ ] Run the detector over the legitimate traces 15B produced and count what it flags. The rate
-      is a required number in Part 4, and it is only meaningful against traces that were not
-      written to be attacked.
+- [x] `safety/run_safety_scan.py` — `--stored` (batch pass over the trace store, writes
+      feedback, splits legitimate from attack), `--attacks` (runs the attack set through Part 1's
+      own runner, then scans it), `--offline` (Layer 1 over the case texts, no model).
+- [x] **Measured over traces (2026-08-07): 0/12 legitimate traces flagged, at either threshold.**
+      25 traces scanned, feedback written to 25; the five attack scenarios and `ae11` all
+      flagged. The legitimate corpus is Part 1's set re-run once per case and without Postgres —
+      lower coverage than a full 3×13 pass, and the README says so rather than leaving it to be
+      inferred.
+- [x] **Measured offline (Layer 1 only): 0/12 legitimate task texts flagged.** The trace-level
+      checks have no offline stand-in, and the report says so rather than implying coverage it
+      does not have.
+- [x] Counted **per trace, at two thresholds** (any finding / `likely` or above), on Part 1's
+      traces minus the case whose declared category is `injection` (#98). A rate measured on the
+      attack set would report the author's intent.
+- [x] **Two defects the live pass found in this phase's own code**, both now pinned by a test:
+      a backticked identifier was treated as a citation (that single rule was the *entire*
+      false-positive count — `ae13` flagged for saying which tool it called), and a tool echoing
+      the request was reported a second time as an indirect injection. The 0% is a
+      re-measurement of the same corpus after those fixes, not an independent sample, and the
+      README says that too.
+- [x] **Filed, not ours:** `sa02` never reached the agent — the provider's content filter
+      returned a 400 on the prompt. A defense layer this repo did not build, counted as its own
+      outcome rather than as "the agent held", and the reason `run_attacks` catches per-case
+      failures (the first live pass died on that 400 and lost the four cases behind it).
 
 ### T15.18b — README § "Part 3 — Safety hardening"
 
-- [ ] Threat model, the layers, the skipped layer with its reason, and the false-positive count
-      **and** rate.
+- [x] Threat model, the four layers with the two that predate this phase named by file and
+      decision, the attack set, and the false-positive count and rate with its coverage stated.
 
 **Depends on:** 15A, and 15B for the legitimate-traffic traces T15.18 counts against.
 **Not on Alejandro.**
@@ -2047,9 +2109,9 @@ Found while building Phase 14D. **`overlay/summarize.py` is Berat's file — fil
 
 ### HW6
 
-- [ ] **`request_origin` for the heartbeat is unset** until T15.20 (Dias). Every other entry
-      point stamps it, so a monitor run is currently the only traffic in the trace store with no
-      origin tag — which reads as "unknown" rather than `batch` in any filter 15C or 15D writes.
+- [x] ~~**`request_origin` for the heartbeat is unset** until T15.20 (Dias)~~ — closed by
+      T15.20: `run_once` runs under `request_origin_scope("batch")`, so monitor traffic is
+      separable from the traffic it grades.
 - [ ] **Traces are a new place user text lands.** Span inputs carry the request verbatim, and on
       the channel path that is a Telegram user's message, currently governed by the HW2 visibility
       rules (#24). The trace store is not visibility-filtered: anyone who can read
@@ -2062,6 +2124,19 @@ Found while building Phase 14D. **`overlay/summarize.py` is Berat's file — fil
       not a tool-description problem — the docstring names "two variants a user pasted". Worth one
       experiment on the STRONG model before anyone edits Alejandro's docstring: if `strong` passes
       it, this is a capability finding about `CHEAP` and belongs in the report, not in `tools/`.
+- [ ] **Filed, not fixed (§1) — `agentlib/context.py` builds rule paths with the platform
+      separator.** `module_rule_files` returns `str(candidate.relative_to(_REPO_ROOT))`, which is
+      `rules\modules\tools.md` on Windows, and two tests in `tests/test_context.py` assert the
+      posix spelling. Both fail on every Windows checkout and have since HW1 — the same two
+      failures the HW5 report named. One character fixes it (`.as_posix()`), and the file is
+      Berat's, so this is a note rather than a diff. Worth doing because the string is also what
+      `sources["pushed"]` records into `runs.jsonl`, so the monitor's evidence for "which rule
+      was assembled" is platform-dependent today.
+- [ ] **The provider's content filter is an unmodelled defense layer.** `sa02`'s prompt was
+      refused upstream with a 400 (`[content_filter]`) and never reached the agent. Every safety
+      number measured through a moderated endpoint is therefore an upper bound on what our own
+      layers were actually tested against — `run_safety_scan` counts those runs separately, but
+      nothing else in the repo knows the layer exists.
 - [ ] **The eval reports no cost.** `llm_calls()` reads token counts and cost off both span types,
       but `run_agent_eval` does not sum them, so a 39-run pass prints no bill. One line, and it
       makes the "is this suite worth running in CI" question answerable.
