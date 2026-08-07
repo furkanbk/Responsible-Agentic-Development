@@ -9,7 +9,7 @@ Branch: `hw1/<owner>/<short-task>` · `hw2/<owner>/<short-task>` · `hw3/<owner>
 > **Current phase: HW6** (Phase 15) — agent evaluation, MLflow tracing, safety hardening.
 > **The classroom calls it "HW3"; here it is HW6** — jump to the `# HW6` section near the end of
 > this file, and do not touch Phases 9-11, which are the real HW3. Your next task:
-> **Berat** 15A+15B (done) · **Alejandro** 15C · **Dias** 15D · all three write their own README
+> **Berat** 15A+15B (done) · **Alejandro** 15C (done) · **Dias** 15D · all three write their own README
 > subsection. The HW4 note below is historical.
 >
 > **Historical: HW4** (Phase 12-13). HW1 (Phases 0-3), HW2 (Phases 4-8) and HW3 (Phases 9-11)
@@ -1831,7 +1831,7 @@ case whose `forbidden_tools` is the payload's goal.
 
 ---
 
-## Phase 15C — Scorers over traces, Part 2.3 (Alejandro)
+## Phase 15C — Scorers over traces, Part 2.3 (Alejandro) — **DONE**
 
 **The scorer bodies do not change.** If wiring a scorer to a trace makes you edit the scorer, the
 adapter is doing too little. `eval/retrieval_metrics.py` and `eval/generation_metrics.py` are
@@ -1840,31 +1840,31 @@ in this phase — the diff is new files only.
 
 ### T15.10 — `eval/trace_adapters.py`
 
-- [ ] `trace_to_rag_inputs(trace) -> {question, answer, chunks}` — question from the root span
+- [x] `trace_to_rag_inputs(trace) -> {question, answer, chunks}` — question from the root span
       input, answer from its output, chunks rebuilt as `retrieval.types.Chunk` from the RETRIEVER
       span (contract #13). This is the adapter with no worked example in class; the toy version
       fed a hand-rolled judge, ours has to feed what HW5 actually shipped.
-- [ ] `trace_to_run_record(trace) -> dict` in `runlog.to_dict()` shape, so **`judge_run` runs over
+- [x] `trace_to_run_record(trace) -> dict` in `runlog.to_dict()` shape, so **`judge_run` runs over
       a trace with zero edits**. `assembled.instructions` is the one field a span tree does not
       carry — pull it from the joined `runs.jsonl` record via the `radf.run_id` tag, and when it
       is missing say so rather than passing `""` (the judge's whole point is telling "ignored the
       rule" apart from "never had the rule", and an empty string quietly answers "never had it").
-- [ ] `ranked_ids_from_hits` already exists and is half of the first adapter. Reuse it.
+- [x] `ranked_ids_from_hits` already exists and is half of the first adapter. Reuse it.
 
 ### T15.11 — Feedback write-back
 
-- [ ] `eval/run_trace_scoring.py` — batch pass over stored traces, `mlflow.log_feedback(...)` per
+- [x] `eval/run_trace_scoring.py` — batch pass over stored traces, `mlflow.log_feedback(...)` per
       metric under the `retrieval.*` / `generation.*` / `monitor.*` prefixes (contract #14).
-- [ ] `flush()` before reading traces back. See T15.2 — this bites once, silently.
+- [x] `flush()` before reading traces back. See T15.2 — this bites once, silently.
 
 ### T15.12 — Tests
 
-- [ ] `tests/test_trace_adapters.py`. CLAUDE.md §8 applies: **at least one online test** in the
+- [x] `tests/test_trace_adapters.py`. CLAUDE.md §8 applies: **at least one online test** in the
       new suite — a real traced run, adapted, scored, written back.
 
 ### T15.13b — README § "Part 2 — Tracing and scorers over traces"
 
-- [ ] What the span tree looks like, which scorers now run over traces, and one before/after
+- [x] What the span tree looks like, which scorers now run over traces, and one before/after
       showing the scorer body unchanged.
 
 **Depends on:** 15A. **Not on Dias.**

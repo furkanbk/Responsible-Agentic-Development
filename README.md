@@ -1067,6 +1067,54 @@ python main.py --trace "which components import agentlib.core?"
 mlflow ui --backend-store-uri sqlite:///store/mlflow.db     # see the tree
 ```
 
+### Part 2 — Scorers over traces (feedback write-back)
+
+The tracing above gives HW5's scorers a production surface to run against. **None of the scorers
+change** — `eval/retrieval_metrics.py`, `eval/generation_metrics.py` (mine) and `monitor/judge.py`
+(Dias's) are byte-identical this phase; the whole diff is two new adapter files. If wiring a scorer
+to a trace forced an edit to the scorer, the adapter would be doing too little.
+
+`eval/trace_adapters.py` is the join between "a trace, read back as data" (`tracing.trajectory`,
+contract #13) and the shapes the scorers already take:
+
+* `trace_to_rag_inputs(trace) → {question, answer, chunks, ranked_ids}` — rebuilds
+  `retrieval.types.Chunk` from what the RETRIEVER span recorded, **in retriever order** (it reuses
+  the frozen `ranked_ids_from_hits`, so a dict round-trip through a span can never feed MRR and nDCG
+  the wrong order — #59/#91). This is the adapter with no worked example in class.
+* `trace_to_run_record(trace) → dict` in `RunLog.to_dict()` shape, so `judge_run` grades a trace
+  unedited. The one field a span tree cannot carry is `assembled.instructions`; it is joined from
+  `store/runs/runs.jsonl` by the `radf.run_id` tag, and when the join misses it is set to `None`
+  and marked `instructions_source="missing"` — never `""`, which the judge would misread as "the
+  rule was never in context". The batch pass then **skips** that trace rather than grading it blind.
+
+The scorer call is unchanged; only where its inputs come from is new:
+
+```python
+# HW5 — over the eval harness            # HW6 — over a stored trace (eval/run_trace_scoring.py)
+score_case(case.query, answer,           inp = trace_to_rag_inputs(trace)      # the only new line
+           chunks, case.golden_answer)    score_case(inp["question"], inp["answer"],
+                                                     inp["chunks"], case.golden_answer)
+```
+
+`eval/run_trace_scoring.py` is a batch pass — a pass over already-stored traces satisfies Part 2.3,
+no worker or asyncio. It decides *which* scorer runs over *which* trace, so no scorer has to: the
+judged RAG metrics are reference-free and run over any answered trace; context recall and the five
+rank metrics need a golden and run only over eval-set traces (`eval_case_id`), and the rank metrics
+only when the index is up to resolve anchors to ids — otherwise `retrieval.*` is skipped with a
+note, exactly how `run_eval` degrades, while the DB-free families still run. Results are written
+back with `mlflow.log_feedback` under the namespaces contract #14 fixes so 15C and 15D never
+collide: `retrieval.*` / `generation.*` / `monitor.*` (mine), `agent.*` (Berat), `safety.*` (Dias).
+
+```bash
+python -m eval.run_trace_scoring --dry-run          # print the feedback, touch nothing
+python -m eval.run_trace_scoring                     # score the batch=origin traces, write it back
+```
+
+Tests: `tests/test_trace_adapters.py` — the adapters against hand-built span stubs (retriever order,
+the `None`-not-`""` instructions distinction, the reference-free/undefined boundaries), plus one
+online test (§8) that runs a real agent, adapts its trace, scores it with a real judged call, writes
+the feedback to MLflow and reads it back off the trace.
+
 ### Part 1 — Agent evaluation results
 
 13 scenarios, 3 runs each — **39 runs, all scored from MLflow traces** (zero fell back to the
