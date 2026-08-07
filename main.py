@@ -28,6 +28,7 @@ from agentlib.loop import DEFAULT_SYSTEM, run_agent
 from agentlib.runlog import RunLog
 from agentlib.session import session_scope
 from tools import build_registry
+from tracing import init_tracing, request_origin_scope
 
 
 def approve_via_input(name: str, args: dict) -> bool:
@@ -69,15 +70,24 @@ def main(argv: list[str] | None = None) -> int:
         help="component the request is about; seeds the impact set so module "
              "rules and decisions bind without a planner round",
     )
+    parser.add_argument(
+        "--trace", action="store_true",
+        help="record an MLflow trace for this run (HW6). Opt-in: without it the "
+             "loop runs exactly as before and writes no trace.",
+    )
     args = parser.parse_args(argv)
 
     # Load .env so OPENCODE_API_KEY (and optional model-id overrides) are present.
     load_dotenv()
+    if args.trace and not init_tracing():
+        print("  [TRACE] mlflow unavailable — running untraced", file=sys.stderr)
 
     model = STRONG if args.model == "strong" else CHEAP
     schemas, registry = build_registry()
 
-    with session_scope(args.user, args.thread) as session:
+    # A human at a keyboard is `ui` traffic (T15.5). Set from the entry point,
+    # never passed in — same rule as identity (#25).
+    with request_origin_scope("ui"), session_scope(args.user, args.thread) as session:
         from overlay.uid import resolve_uid
 
         impact = [uid] if (uid := resolve_uid(args.component)) else []
@@ -115,6 +125,10 @@ def main(argv: list[str] | None = None) -> int:
         for ev in result["trace"]:
             print(f"    [{ev['branch']}] {ev['tool']}({ev['args']}) -> {ev['output']}")
     print("run_id :", result.get("run_id"))
+    if run_log.trace_id:
+        # The join into the trace store, printed because it is the only way to
+        # find this run in `mlflow ui` afterwards.
+        print("trace  :", run_log.trace_id)
     return 0
 
 

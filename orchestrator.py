@@ -39,6 +39,7 @@ from agents.envelope import AgentResult
 from agents.executor import run_executor
 from agents.planner import run_planner
 from overlay import db as overlay_db
+from tracing.spans import agent_span
 
 PLAN_KEY = "plan"
 
@@ -76,11 +77,20 @@ def run_change_request(
     Returns:
         {"status", "plan", "changes", "run_id", "planner", "executor", "notes"}
     """
-    with session_scope(user_id, thread_id) as session:
+    # HW6 (T15.3): one outer span, so the planner's run and the executor's run
+    # nest into ONE trace. A trajectory split across two traces cannot be scored
+    # as one run, and the pipeline is exactly where a trajectory metric has
+    # something interesting to say.
+    with session_scope(user_id, thread_id) as session, agent_span(
+        "orchestrator.run_change_request",
+        request=request, agent="orchestrator", user_id=session.user_id,
+    ) as span:
         run_log = RunLog(
             agent="orchestrator", user_id=session.user_id,
             thread_id=session.thread_id, request=request,
         )
+        if span is not None:
+            run_log.trace_id = getattr(span, "trace_id", None)
         conn = overlay_db.connect()
         try:
             run_id = overlay_db.start_run(

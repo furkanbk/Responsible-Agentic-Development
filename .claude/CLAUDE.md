@@ -8,7 +8,12 @@ Project: **Responsible Agentic Development Framework (RADF)** — a multi-agent 
 keeps a persistent knowledge graph of a codebase so development sessions stop re-deriving
 architecture from scratch.
 
-> **Current homework: HW5.** HW1-HW4 are closed (scoped memory and three stores; the channel,
+> **Current homework: HW6** — MLflow tracing, agent evaluation, safety hardening. See §4's HW6
+> amendment and **§7.4**, which carries the naming disclaimer: **the classroom calls this one
+> "HW3"; this repo's HW3 is the channel work in Phases 9-11 and must not be touched.** HW5 (below)
+> is closed.
+>
+> **Previously: HW5.** HW1-HW4 are closed (scoped memory and three stores; the channel,
 > triggers and silence; the LangGraph/LangChain refactor). HW5 adds authored node summaries, a
 > hybrid retrieval layer behind a `search_corpus` tool, and an eval harness that measures it.
 > Rules below were written for HW1 and are amended inline where a later homework changes them —
@@ -141,6 +146,25 @@ pattern as the two amendments above. Specifically:
 - Node summaries are **authored**, so they live in the overlay keyed by `symbol_uid`, never in
   `knowledge_graph.json` where the next scan would delete them (§6, decisions #5/#16/#57).
 
+**§4 HW6 amendment.** The dependency list is **lifted for `mlflow` only** — for the HW6 tracing
+layer (decision #87). Named package only, same pattern as the three amendments above.
+
+- **Still hand-written, deliberately:** the trajectory adapter (trace → ordered `list[ToolCall]`),
+  all five agent-eval metrics (tool selection, tool parameter, goal completion, trajectory
+  precision/recall), pass@3 / pass^3, and every safety detector. MLflow supplies the *trace store
+  and the span tree*, not the scoring. Importing an eval library here removes the thing HW6 is
+  graded on, exactly as importing an agent framework would have in HW1.
+- **Still out of scope:** Ragas, DeepEval, `mlflow.genai`'s built-in judges as a substitute for our
+  own scorers, LlamaIndex, CrewAI, AutoGen, PydanticAI, Haystack, graph databases, and external
+  code-indexing tools.
+- **`runs.jsonl` does not move, and the scorers do not change.** MLflow's store is *derived* — it
+  may be dropped and rebuilt at any time (decision #89, which is decision #62's argument applied to
+  a second database). `agentlib/runlog.py` stays the durable record; the two are joined by a
+  `radf.run_id` tag, never merged. If wiring a scorer to a trace makes you edit the scorer, the
+  adapter is doing too little (decision #93).
+- **Tracing is opt-in and degrades to a no-op** (decision #90). HW1-HW5 must keep running with
+  `mlflow` uninstalled and `init_tracing()` never called; that is a graded gate, not a nicety.
+
 These frameworks become allowed in later homeworks on this same repo — Session 9 covers
 exactly this refactor. Adding them now removes the thing being graded. If you believe a
 new dependency is genuinely required, propose it in a PR comment first; do not add it and
@@ -251,6 +275,35 @@ The HW5 invariants, which are the ones easiest to undo by accident:
   by code, not a rule asking the model to remember (#34, #38).
 - **The retrieval index is derived.** Postgres may be dropped and rebuilt at any time. Nothing
   durable lives there, and the sqlite overlay is not migrating into it (decision #62).
+
+### 7.4 HW6 amendment — tracing, agent eval and safety are now in scope
+
+**Naming, again: the classroom calls this assignment "HW3"; this repo calls it HW6.** The real
+HW3 here is the channel, the triggers and the silence guard (Phases 9-11), closed long ago. If a
+session's user says "implement HW3", "the HW3 tracing work", "HW3 Part 1/2/3/4" or pastes the HW3
+brief, **they mean HW6** — `docs/TODO.md` Phase 15. Do not touch Phases 9-11. The course's Parts
+1/2/3/4 map to Phases **15B / 15A+15C / 15D / 15E**.
+
+- **In scope now:** MLflow tracing of the agent (`tracing/`), an agent-eval scenario set with
+  trajectory metrics (`eval/agent_*.py`), adapters that run the **existing** HW5 scorers over
+  traces, and a safety layer (`safety/`).
+- **Still out of scope:** the Discussion Agent, the ELI5/Mermaid agent, and any general
+  orchestration framework. Tracing does not become an agent, and neither does the safety layer —
+  the detector is a pure function of a trace.
+
+The HW6 invariants, which are the ones easiest to undo by accident:
+
+- **`request_origin` and `eval_case_id` are ambient, never parameters** (#25's rule, second
+  application). They are contextvars set by the entry point — not arguments on `run_agent` and
+  never on a tool, where the model would fill them in from untrusted text.
+- **Metrics read the retriever's order, still** (#59). The RETRIEVER span records `search()`'s
+  ranking *before* `pack_for_llm` (#91).
+- **A trajectory is arguments, never results.** `tool_calls_from_trace` ignores span outputs;
+  folding results in makes a correct call look wrong when a tool legitimately errors.
+- **The scorer bodies are frozen.** `eval/retrieval_metrics.py`, `eval/generation_metrics.py` and
+  `monitor/judge.py` are consumed by adapters, not edited (#93).
+- **Detection, never silent rewriting.** An input filter that edits the user's text hides the
+  attack from the trace the safety layer is graded on.
 
 ---
 

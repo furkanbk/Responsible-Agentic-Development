@@ -34,6 +34,8 @@ try:
 except ImportError:  # pragma: no cover - openai is a declared HW1 dependency
     OpenAI = None  # type: ignore
 
+from tracing.spans import llm_span, record_usage, set_outputs
+
 # --- Configuration -----------------------------------------------------------
 
 BASE_URL = os.environ.get("OPENCODE_BASE_URL", "https://opencode.ai/zen/v1")
@@ -156,8 +158,23 @@ def call(
         params["max_output_tokens"] = max_output_tokens
     params.update(kwargs)
 
-    resp = _get_client().responses.create(**params)
-    return _to_result(resp)
+    # HW6 (T15.3): the raw Zen path gets its LLM span by hand. Autolog reaches
+    # the LangGraph path's model, not this one — and this one is what the
+    # planner, the monitor's judge, the summariser and the generation metrics
+    # all call, so leaving it untraced would leave most of the system's model
+    # calls invisible. Usage and cost are already computed here; the span just
+    # records them, and latency is the span's own duration.
+    with llm_span(f"llm.{model}", model=model, inputs={"input": input_items}) as span:
+        resp = _get_client().responses.create(**params)
+        result = _to_result(resp)
+        record_usage(span, result.usage, estimate_cost(result.usage, model))
+        set_outputs(span, {
+            "text": result.text,
+            "tool_calls": result.tool_calls,
+            "status": result.status,
+            "truncated": result.truncated,
+        })
+        return result
 
 
 # Output items must be REPLAY-SAFE: `output_items` is fed straight back as the

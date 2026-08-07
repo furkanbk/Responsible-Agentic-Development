@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
+from tracing.spans import retriever_span, set_outputs
+
 from .bm25 import BM25
 from .embed import EmbeddingError, embed_query
 from .fuse import RRF_K, rrf, to_rank_list
@@ -65,10 +67,40 @@ def search(
     if not query or not query.strip():
         return []
 
-    if conn is not None:
-        return _search_with(conn, query, k, rerank, source, candidates, rrf_k, weights)
-    with connect() as owned:
-        return _search_with(owned, query, k, rerank, source, candidates, rrf_k, weights)
+    # HW6 (T15.3): the RETRIEVER span records the hits in **retriever order** —
+    # this is `search()`'s own ranking, before `pack_for_llm` reorders it for the
+    # context window. Decision #59 says the metrics read the retriever's order;
+    # recording the packed list here would push the repacking upstream of every
+    # scorer and silently degrade MRR and nDCG while the other three metrics
+    # looked fine (decision #91).
+    with retriever_span(query, k=k, rerank=rerank, source=source) as span:
+        if conn is not None:
+            hits = _search_with(conn, query, k, rerank, source, candidates, rrf_k, weights)
+        else:
+            with connect() as owned:
+                hits = _search_with(owned, query, k, rerank, source, candidates, rrf_k, weights)
+        set_outputs(span, {"hits": [_hit_for_span(h) for h in hits]})
+        return hits
+
+
+def _hit_for_span(hit: Hit) -> dict:
+    """A Hit flattened for a span. `text` is included: an indirect-injection
+    detector (HW6 15D) has to see what actually came back out of the corpus."""
+    chunk = hit.chunk
+    return {
+        "chunk_id": chunk.chunk_id,
+        "rank": hit.rank,
+        "kind": chunk.kind,
+        "symbol_uid": chunk.symbol_uid,
+        "symbol": chunk.symbol,
+        "heading_path": chunk.heading_path,
+        "source_path": chunk.source_path,
+        "dense_score": hit.dense_score,
+        "bm25_score": hit.bm25_score,
+        "rrf_score": hit.rrf_score,
+        "rerank_score": hit.rerank_score,
+        "text": chunk.text,
+    }
 
 
 def _search_with(conn, query, k, do_rerank, source, candidates, rrf_k, weights) -> list[Hit]:
